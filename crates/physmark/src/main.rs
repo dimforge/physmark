@@ -257,6 +257,15 @@ fn subprocess(
     }
     cmd.env("JAX_ENABLE_X64", "false")
         .env("PYTHONUNBUFFERED", "1");
+    cmd.env(
+        "JAX_COMPILATION_CACHE_DIR",
+        root.join(".physmark/cache/jax"),
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
     let mut child = cmd.spawn().context("starting engine adapter")?;
     let start = Instant::now();
     loop {
@@ -269,6 +278,12 @@ fn subprocess(
             return Ok(());
         }
         if start.elapsed() > Duration::from_secs(timeout) {
+            #[cfg(unix)]
+            // SAFETY: this process group was created for this owned child above.
+            // Kill JIT compiler descendants too, so they cannot contaminate later trials.
+            unsafe {
+                libc::kill(-(child.id() as i32), libc::SIGKILL);
+            }
             let _ = child.kill();
             let _ = child.wait();
             bail!("adapter timed out after {timeout}s; see {}", log.display());

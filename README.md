@@ -30,8 +30,11 @@ cargo run --release -- run --suite suites/smoke.toml
 Open the printed `results/<run>/index.html` directly in a browser. The report works offline and links to all jobs, raw timings, logs, trajectories, settings and source/machine metadata. Results and build caches are ignored by Git. No data is uploaded.
 
 ```sh
-# A short scale comparison, including common-renderer videos:
-cargo run --release -- run --scenarios box_pile --sizes 4,16,64 --repeats 3
+# A scale demonstration with repeated trials and common-renderer videos:
+cargo run --release -- run --suite suites/demo.toml
+
+# All eight features, each with two independent worlds:
+cargo run --release -- run --suite suites/coverage.toml
 
 # CPU-only comparison:
 cargo run --release -- run --engines rapier,mujoco,mjx,newton,genesis --backend genesis=cpu --no-capture
@@ -63,7 +66,7 @@ cargo run --release -- build
 cargo run --release -- run --suite suites/smoke.toml
 ```
 
-Review and commit the lockfile changes after validation. An upstream API change may require an adapter change; the smoke suite is the compatibility gate. `requirements.lock` pins Python dependency versions. The adapter Cargo lockfiles pin Rust dependencies, including Nexus's Khal and Vortx revisions. Keep native dependency revisions coherent with an updated Nexus pin. If dependency requirements change, resolve and review the Python lock and Cargo locks explicitly; the build does not silently select a newer engine.
+Review and commit the lockfile changes after validation. An upstream API change may require an adapter change; the smoke suite is the compatibility gate. `requirements.lock` pins Python dependency versions. The adapter Cargo lockfiles pin Rust dependencies, including Nexus's Khal and Vortx revisions. Keep native dependency revisions coherent with an updated Nexus pin. Newton, MuJoCo and its Warp dependency may also require coordinated pin updates (`pin mujoco-warp <ref>`). If dependency requirements change, resolve and review the Python lock and Cargo locks explicitly; the build does not silently select a newer engine.
 
 The runner checks source checkouts against the pins and verifies a build fingerprint. Changes to adapters, shared code, build tools or dependency locks require `build` again. Upstream checkout modifications are rejected. Build products are kept outside the upstream trees.
 
@@ -100,3 +103,4 @@ cargo clippy --workspace --all-targets -- -D warnings
 ```
 
 The subprocess protocol and deterministic scene generator live in `crates/physmark-core`; orchestration is in `crates/physmark`; the small Python layer calls the Python-first engines and renders results. Python does not orchestrate benchmark scheduling or sit between the controller and a native engine's timed step loop.
+
