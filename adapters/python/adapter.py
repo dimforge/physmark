@@ -431,6 +431,11 @@ def run(job, evidence_dir=None):
                 frames=[],
                 gpu_timing=gpu_timing,
             )
+    memory = None
+    if job["mode"] == "memory":
+        from memory_usage import MemorySampler
+
+        memory = MemorySampler(job["backend"])
     xml = mjcf(job["scene"])
     start = time.perf_counter()
     sim = {"mujoco": Mujoco, "mjx": MJX, "newton": Newton, "genesis": Genesis}[
@@ -438,13 +443,19 @@ def run(job, evidence_dir=None):
     ](job, xml)
     sim.sync()
     setup = time.perf_counter() - start
+    if memory:
+        memory.sample("setup")
     sim.settings["warmup_steps_effective"] = max(job["warmup"], job["steps"])
     start = time.perf_counter()
     sim.advance(max(job["warmup"], job["steps"]))
     sim.sync()
     warmup = time.perf_counter() - start
+    if memory:
+        memory.sample("warmup")
     sim.reset()
     sim.sync()
+    if memory:
+        memory.sample("reset")
     frames = []
     nb = sum(b["dynamic"] for b in job["scene"]["bodies"])
     if job["mode"] == "capture":
@@ -472,6 +483,7 @@ def run(job, evidence_dir=None):
         sim.advance(job["steps"])
         sim.sync()
         elapsed = time.perf_counter() - start
+    memory_result = memory.finish(job["steps"]) if memory else None
     return {
         "schema_version": 1,
         "engine": job["engine"],
@@ -484,6 +496,7 @@ def run(job, evidence_dir=None):
         "settings": sim.settings,
         "frames": frames,
         "gpu_timing": gpu_timing,
+        "memory": memory_result,
     }
 
 

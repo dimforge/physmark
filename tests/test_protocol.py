@@ -228,3 +228,94 @@ def test_gpu_preflight_never_labels_cpu_or_genesis_metal_as_device_time():
         assert result["seconds"] is None and result["sample_count"] == 0
         assert result["reason"]
     assert preflight(dict(engine="mjx", backend="cuda")) is None
+
+
+def test_memory_statistics_require_complete_matching_replays():
+    import copy
+
+    records = [
+        dict(
+            engine="nexus",
+            backend="metal",
+            scenario="stacks",
+            size=8,
+            worlds=1,
+            status="passed",
+            ms_per_step=1,
+            steps=4,
+            memory=dict(
+                status="complete",
+                completed_steps=4,
+                metrics={
+                    key: dict(
+                        status="available",
+                        method=key,
+                        scope="process",
+                        peak_kind="sampled" if key == "gpu" else "os_high_water",
+                        peak_bytes=1024 * (i + 1),
+                    )
+                    for key in ["ram", "gpu"]
+                },
+            ),
+        )
+        for i in range(2)
+    ]
+    row = summarize(records)[0]
+    assert row["memory"]["ram"]["eligible"]
+    assert row["memory"]["gpu"]["median_bytes"] == 1536
+    for mutate in [
+        lambda r: r.pop("memory"),
+        lambda r: r["memory"].update(status="error"),
+        lambda r: r["memory"].update(completed_steps=3),
+        lambda r: r["memory"]["metrics"]["gpu"].update(
+            status="unavailable", peak_bytes=None
+        ),
+        lambda r: r["memory"]["metrics"]["gpu"].update(peak_bytes=0),
+        lambda r: r["memory"]["metrics"]["gpu"].update(scope="another_counter"),
+        lambda r: r["memory"]["metrics"]["gpu"].update(peak_kind="os_high_water"),
+    ]:
+        partial = copy.deepcopy(records)
+        mutate(partial[1])
+        row = summarize(partial)[0]
+        assert row["eligible"]  # memory failures cannot rewrite primary timings
+        assert not row["memory"]["gpu"]["eligible"]
+    legacy = [{k: v for k, v in record.items() if k != "memory"} for record in records]
+    assert summarize(legacy)[0]["memory"]["ram"]["median_bytes"] is None
+
+
+def test_shared_native_memory_sampler_observes_real_metal_allocation():
+    import ctypes as ct
+    import pytest
+    from memory_usage import MemorySampler
+
+    if sys.platform != "darwin":
+        pytest.skip("Metal allocation test requires macOS")
+    metal = ct.CDLL("/System/Library/Frameworks/Metal.framework/Metal")
+    objc = ct.CDLL("/usr/lib/libobjc.A.dylib")
+    metal.MTLCreateSystemDefaultDevice.restype = ct.c_void_p
+    objc.sel_registerName.argtypes = [ct.c_char_p]
+    objc.sel_registerName.restype = ct.c_void_p
+    allocate = ct.CFUNCTYPE(
+        ct.c_void_p, ct.c_void_p, ct.c_void_p, ct.c_uint64, ct.c_uint64
+    )(("objc_msgSend", objc))
+    release = ct.CFUNCTYPE(None, ct.c_void_p, ct.c_void_p)(("objc_msgSend", objc))
+    sampler = MemorySampler("metal")
+    device = metal.MTLCreateSystemDefaultDevice()
+    buffer = allocate(
+        device, objc.sel_registerName(b"newBufferWithLength:options:"), 64 * 2**20, 0
+    )
+    assert buffer
+    try:
+        sampler.sample("setup")
+        sampler.sample("warmup")
+        sampler.sample("reset")
+        result = sampler.finish(1)
+        baseline, setup = result["snapshots"][:2]
+        assert setup["bytes"]["gpu"] - baseline["bytes"]["gpu"] >= 64 * 2**20
+        assert result["metrics"]["gpu"]["peak_bytes"] >= setup["bytes"]["gpu"]
+        assert result["metrics"]["ram"]["peak_bytes"] > 0
+        assert result["metrics"]["footprint"]["peak_bytes"] > 0
+        assert result["unified_memory"] is True
+    finally:
+        release(buffer, objc.sel_registerName(b"release"))
+        release(device, objc.sel_registerName(b"release"))

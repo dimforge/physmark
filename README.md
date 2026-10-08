@@ -27,11 +27,17 @@ cargo run --release -- run --suite suites/smoke.toml
 
 `build` installs into `.physmark/envs/python`, builds the pinned upstream sources in `.physmark/sources`, and compiles the adapters in release mode. It never installs into your system Python. All Python engines share a version-locked environment in this first release; each trial runs in a fresh process. Native adapters have independent Cargo lockfiles.
 
-Open the printed `results/<run>/index.html` directly in a browser. The report works offline and links to all jobs, raw timings, logs, trajectories, settings and source/machine metadata. GPU trials also collect device timestamps in a separate profiling replay when supported: solid curves show synchronized time and dashed curves show GPU time. The coverage table explains unavailable measurements; the leaderboard uses synchronized time. See [timing methodology](docs/methodology.md#gpu-timestamps). Results and build caches are ignored by Git. No data is uploaded.
+Open the printed `results/<run>/index.html` directly in a browser. The report works offline and links to all jobs, raw timings, logs, trajectories, settings and source/machine metadata. GPU trials also collect device timestamps in a separate profiling replay when supported: solid curves show synchronized time and dashed curves show GPU time. The coverage table explains unavailable measurements; the leaderboard uses synchronized time. See [timing methodology](docs/methodology.md#gpu-timestamps). Every passing trial also runs an independent memory replay: peak process RAM, macOS physical footprint, and sampled GPU allocations appear in tables and lower-is-better curves. Metal uses actual resource counters for Nexus and Genesis; Apple unified RAM and GPU allocations overlap, so do not add them. Older runs display “not collected”. See [memory methodology](docs/methodology.md#ram-and-gpu-memory). Results and build caches are ignored by Git. No data is uploaded.
 
 ```sh
 # A scale demonstration with repeated trials and common-renderer videos:
 cargo run --release -- run --suite suites/demo.toml
+
+# Three box-stack scales, all six engines, repeated timings and captures:
+cargo run --release -- run --suite suites/stacks-three-scales.toml
+
+# Environment scaling: 8/128 boxes, 1 to 4,096 environments:
+cargo run --release -- run --suite suites/stacks-environments.toml
 
 # All eight features, each with two independent worlds:
 cargo run --release -- run --suite suites/coverage.toml
@@ -45,6 +51,9 @@ cargo run --release -- run --suite suites/batch.toml
 # Larger single-world workloads (intentionally demanding):
 cargo run --release -- run --suite suites/scale.toml --no-capture
 
+# Small memory telemetry check (eight cases, not a performance study):
+cargo run --release -- run --suite suites/memory-smoke.toml
+
 # Rebuild the report without rerunning physics:
 cargo run --release -- report results/<run>
 
@@ -52,7 +61,9 @@ cargo run --release -- report results/<run>
 cargo run --release -- scene mixed_pile --size 32 --seed 42 --output scene.json
 ```
 
-A run returns a nonzero exit code if any trial fails. The report still includes those trials. An existing output directory is never overwritten by `run`; select another with `--output`.
+A run returns a nonzero exit code if any trial fails or is skipped. The report still includes those trials. An existing output directory is never overwritten by a fresh `run`; select another with `--output`.
+
+To continue an interrupted run, repeat its suite/options with `--output results/<run> --resume`. Completed results are preserved, interrupted attempts are archived, and resumed harness provenance is saved in `resume-history.json`. Resumption requires the same suite, engine pins, backends, requested threads, Python package versions, Rust version and machine metadata. A known resource-failing case can be excluded from further attempts with `--skip-case 'mjx:stacks:1024:1=reason'` (engine:scenario:bodies:worlds). These skipped trials remain visible and prevent a complete-suite score. No case is skipped automatically. Environment counts run in ascending order, with deterministic shuffled trials within each count. On macOS, set `PHYSMARK_MEMORY_LIMIT_GIB=72` to terminate an adapter if its physical footprint exceeds that limit (sampled once per second by the controller and recorded in provenance).
 
 ## Updating engines
 
@@ -91,7 +102,7 @@ This first version covers rigid primitives and world-anchored hinges. It does **
 
 ## NVIDIA machines
 
-The Python adapters accept `--backend genesis=cuda,newton=cuda,mjx=cuda`; Nexus accepts CUDA when built with `PHYSMARK_NEXUS_FEATURES=cuda`. These paths are wired but require validation on NVIDIA hardware. The checked dependency lock was resolved on macOS arm64; a Linux CUDA environment requires compatible CUDA-enabled Torch/Warp/JAX packages and a reviewed platform lock. The build helper accepts `PHYSMARK_NEXUS_FEATURES=webgpu` as well. This Mac cannot validate CUDA execution.
+The Python adapters accept `--backend genesis=cuda,newton=cuda,mjx=cuda`; Nexus accepts CUDA when built with `PHYSMARK_NEXUS_FEATURES=cuda`. These paths are wired but require validation on NVIDIA hardware. The checked dependency lock was resolved on macOS arm64; a Linux CUDA environment requires compatible CUDA-enabled Torch/Warp/JAX packages and a reviewed platform lock. The build helper accepts `PHYSMARK_NEXUS_FEATURES=webgpu` as well. Linux CUDA memory collection uses NVML per-process counters when the driver exposes them, with explicit unavailable status otherwise. This Mac cannot validate CUDA execution or NVML hardware counters.
 
 ## Development
 

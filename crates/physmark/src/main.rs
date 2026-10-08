@@ -70,6 +70,12 @@ enum Action {
         backend: Vec<String>,
         #[arg(long)]
         no_capture: bool,
+        /// Continue an existing output, retaining completed trials and recording new provenance.
+        #[arg(long, requires = "output")]
+        resume: bool,
+        /// Skip remaining trials of engine:scenario:size:worlds=reason; retained as unranked outcomes.
+        #[arg(long = "skip-case")]
+        skip_cases: Vec<String>,
         #[arg(long)]
         timeout: Option<u64>,
         #[arg(short, long)]
@@ -231,6 +237,38 @@ fn adapter_command(root: &Path, engine: &str) -> Command {
         c
     }
 }
+fn memory_limit_bytes() -> Result<Option<u64>> {
+    let Some(value) = std::env::var_os("PHYSMARK_MEMORY_LIMIT_GIB") else {
+        return Ok(None);
+    };
+    ensure!(
+        cfg!(target_os = "macos"),
+        "memory monitoring currently requires macOS"
+    );
+    let gib: u64 = value.to_string_lossy().parse()?;
+    ensure!(gib > 0, "memory limit must be positive");
+    Ok(Some(
+        gib.checked_mul(1 << 30).context("memory limit overflow")?,
+    ))
+}
+#[cfg(target_os = "macos")]
+fn process_footprint(pid: u32) -> Option<u64> {
+    let mut usage = std::mem::MaybeUninit::<libc::rusage_info_v0>::uninit();
+    // SAFETY: flavor V0 writes the matching initialized structure into this buffer.
+    let status = unsafe {
+        libc::proc_pid_rusage(pid as i32, libc::RUSAGE_INFO_V0, usage.as_mut_ptr().cast())
+    };
+    if status == 0 {
+        // SAFETY: a successful proc_pid_rusage initialized every field above.
+        Some(unsafe { usage.assume_init() }.ri_phys_footprint)
+    } else {
+        None
+    }
+}
+#[cfg(not(target_os = "macos"))]
+fn process_footprint(_pid: u32) -> Option<u64> {
+    None
+}
 fn subprocess(
     mut cmd: Command,
     root: &Path,
@@ -240,6 +278,7 @@ fn subprocess(
     timeout: u64,
     threads: usize,
 ) -> Result<()> {
+    let memory_limit = memory_limit_bytes()?;
     let file = fs::File::create(log)?;
     cmd.args([job, result])
         .current_dir(root)
@@ -268,6 +307,7 @@ fn subprocess(
     }
     let mut child = cmd.spawn().context("starting engine adapter")?;
     let start = Instant::now();
+    let mut last_memory_check = start;
     loop {
         if let Some(status) = child.try_wait()? {
             ensure!(
@@ -276,6 +316,26 @@ fn subprocess(
                 log.display()
             );
             return Ok(());
+        }
+        if let Some(limit) = memory_limit
+            && last_memory_check.elapsed() >= Duration::from_secs(1)
+        {
+            last_memory_check = Instant::now();
+            if let Some(bytes) = process_footprint(child.id())
+                && bytes > limit
+            {
+                #[cfg(unix)]
+                // SAFETY: this group belongs to the adapter process spawned above.
+                unsafe {
+                    libc::kill(-(child.id() as i32), libc::SIGKILL);
+                }
+                let _ = child.kill();
+                let _ = child.wait();
+                bail!(
+                    "adapter memory limit exceeded: physical footprint {bytes} bytes > {limit} bytes; see {}",
+                    log.display()
+                );
+            }
         }
         if start.elapsed() > Duration::from_secs(timeout) {
             #[cfg(unix)]
@@ -297,13 +357,65 @@ fn atomic_json(path: &Path, value: &impl Serialize) -> Result<()> {
     fs::rename(tmp, path)?;
     Ok(())
 }
+fn validate_resume_metadata(previous: &Value, current: &Value) -> Result<()> {
+    for key in ["memory_limit_bytes", "scheduling"] {
+        ensure!(
+            previous.get(key) == current.get(key),
+            "cannot resume: {key} changed"
+        );
+    }
+    for key in [
+        "schema_version",
+        "suite",
+        "backends",
+        "threads_requested",
+        "source_pins",
+        "lock_hash",
+        "python_packages",
+        "hardware",
+        "rust",
+    ] {
+        ensure!(
+            previous.get(key).is_some() && previous[key] == current[key],
+            "cannot resume: {key} changed"
+        );
+    }
+    Ok(())
+}
+fn parse_skip_cases(specs: &[String]) -> Result<BTreeMap<String, String>> {
+    let mut result = BTreeMap::new();
+    for spec in specs {
+        let (key, reason) = spec
+            .split_once('=')
+            .context("skip-case requires engine:scenario:size:worlds=reason")?;
+        let parts: Vec<_> = key.split(':').collect();
+        ensure!(
+            parts.len() == 4 && ENGINES.contains(&parts[0]) && SCENARIOS.contains(&parts[1]),
+            "invalid skip-case key"
+        );
+        ensure!(
+            parts[2].parse::<usize>()? > 0
+                && parts[3].parse::<usize>()? > 0
+                && !reason.trim().is_empty(),
+            "invalid skip-case counts/reason"
+        );
+        ensure!(
+            result.insert(key.into(), reason.into()).is_none(),
+            "duplicate skip-case"
+        );
+    }
+    Ok(result)
+}
 fn run(
     root: &Path,
     suite: Suite,
     threads: usize,
     backends: Vec<String>,
     out: Option<PathBuf>,
+    resume: bool,
+    skip_cases: Vec<String>,
 ) -> Result<()> {
+    let skip_cases = parse_skip_cases(&skip_cases)?;
     verify_sources(root)?;
     ensure!(
         fs::read_to_string(root.join(".physmark/build.stamp")).unwrap_or_default() == stamp(root)?,
@@ -364,13 +476,35 @@ fn run(
         root.join(out)
     };
     ensure!(
-        !out.exists(),
-        "output already exists; choose a new directory to preserve results"
+        out.exists() == resume,
+        "use a new output directory, or --resume with an existing output"
     );
     fs::create_dir_all(out.join("runs"))?;
-    let metadata = json!({"schema_version":1,"created_unix":epoch,"suite":suite,"backends":backend_map,"threads_requested":threads,"source_pins":lock(root)?,"lock_hash":hash(&fs::read(root.join("engines.lock"))?),"build_stamp":stamp(root)?,"harness_commit":command_output(root,"git",&["rev-parse","HEAD"]),"harness_status":command_output(root,"git",&["status","--porcelain"]),"hardware":{"uname":command_output(root,"uname",&["-a"]),"cpu":command_output(root,"sysctl",&["-n","machdep.cpu.brand_string"]),"memory_bytes":command_output(root,"sysctl",&["-n","hw.memsize"]),"os":command_output(root,"sw_vers",&[]),"gpu":command_output(root,"system_profiler",&["SPDisplaysDataType"])},"rust":command_output(root,"rustc",&["--version"]),"python_packages":command_output(root,python(root).to_str().unwrap(),&["-c","import importlib.metadata,json;print(json.dumps({d.metadata['Name']:d.version for d in importlib.metadata.distributions()}))"]),"timing":"synchronized warmed fixed-horizon rollouts; setup, JIT, reset, readback and rendering excluded; separate process per trial; serial scheduling","gpu_timing":"independent warmed profiling process per passing GPU trial; device durations only; unavailable is never replaced by wall time; raw method and scope per trial; leaderboard remains synchronized wall time","quality":"baseline sanity gates, not accuracy-equated solvers","thread_note":"thread environment limits are requests; GPU and framework worker counts remain engine dependent"});
-    atomic_json(&out.join("metadata.json"), &metadata)?;
-    let mut records: Vec<Value> = vec![];
+    let metadata = json!({"schema_version":1,"created_unix":epoch,"suite":suite,"backends":backend_map,"threads_requested":threads,"source_pins":lock(root)?,"lock_hash":hash(&fs::read(root.join("engines.lock"))?),"build_stamp":stamp(root)?,"harness_commit":command_output(root,"git",&["rev-parse","HEAD"]),"harness_status":command_output(root,"git",&["status","--porcelain"]),"hardware":{"uname":command_output(root,"uname",&["-a"]),"cpu":command_output(root,"sysctl",&["-n","machdep.cpu.brand_string"]),"memory_bytes":command_output(root,"sysctl",&["-n","hw.memsize"]),"os":command_output(root,"sw_vers",&[]),"gpu":command_output(root,"system_profiler",&["SPDisplaysDataType"])},"rust":command_output(root,"rustc",&["--version"]),"python_packages":command_output(root,python(root).to_str().unwrap(),&["-c","import importlib.metadata,json;print(json.dumps({d.metadata['Name']:d.version for d in importlib.metadata.distributions()}))"]),"timing":"synchronized warmed fixed-horizon rollouts; setup, JIT, reset, readback and rendering excluded; separate process per trial; serial scheduling","gpu_timing":"independent warmed profiling process per passing GPU trial; device durations only; unavailable is never replaced by wall time; raw method and scope per trial; leaderboard remains synchronized wall time","memory":"independent replay per passing trial; OS process RAM high-water and sampled per-process GPU allocation counters; 10 ms target cadence plus synchronized phase boundaries; ends before readback; RAM and GPU can overlap on unified-memory systems","quality":"baseline sanity gates, not accuracy-equated solvers","thread_note":"thread environment limits are requests; GPU and framework worker counts remain engine dependent"});
+    let mut metadata = metadata;
+    metadata["memory_limit_bytes"] = json!(memory_limit_bytes()?);
+    metadata["scheduling"] = json!(
+        "ascending environment count; deterministic shuffled trials within each count; serial adapters"
+    );
+    metadata["memory_monitor"] = json!(
+        "when enabled: macOS adapter physical footprint sampled once per second by the controller; exceeding the limit terminates the trial"
+    );
+    let mut records: Vec<Value> = if resume {
+        let previous: Value = serde_json::from_slice(&fs::read(out.join("metadata.json"))?)?;
+        validate_resume_metadata(&previous, &metadata)?;
+        let history_path = out.join("resume-history.json");
+        let mut history: Vec<Value> = if history_path.exists() {
+            serde_json::from_slice(&fs::read(&history_path)?)?
+        } else {
+            vec![]
+        };
+        history.push(json!({"metadata":metadata,"skip_cases":skip_cases}));
+        atomic_json(&history_path, &history)?;
+        serde_json::from_slice(&fs::read(out.join("results.json"))?)?
+    } else {
+        atomic_json(&out.join("metadata.json"), &metadata)?;
+        vec![]
+    };
     let mut order = vec![];
     for scenario in &suite.scenarios {
         for &size in &suite.sizes {
@@ -393,11 +527,23 @@ fn run(
         rng ^= rng << 17;
         order.swap(i, rng as usize % (i + 1));
     }
+    // Establish lower-memory cases first, keeping shuffled trials within each scale.
+    order.sort_by_key(|case| case.2);
     let total = order.len();
     for (idx, (scenario, size, worlds, seed, repeat, engine)) in order.into_iter().enumerate() {
         let id = format!("{engine}-{scenario}-n{size}-w{worlds}-s{seed}-r{repeat}");
+        if records.iter().any(|r| r["id"] == id) {
+            continue;
+        }
+        let case = format!("{engine}:{scenario}:{size}:{worlds}");
+        let skip = skip_cases.get(&case);
         let dir = out.join("runs").join(&id);
-        fs::create_dir(&dir)?;
+        if dir.exists() && skip.is_none() {
+            let archive = out.join("interrupted");
+            fs::create_dir_all(&archive)?;
+            fs::rename(&dir, archive.join(format!("{id}-{epoch}")))?;
+        }
+        fs::create_dir_all(&dir)?;
         let job = Job {
             schema_version: 1,
             scene: scene(&scenario, size, seed, suite.dt)?,
@@ -413,6 +559,25 @@ fn run(
         job.validate()?;
         atomic_json(&dir.join("job.json"), &job)?;
         println!("[{}/{}] {id} ({})", idx + 1, total, job.backend);
+        let mut record = json!({"id":id,"engine":engine,"backend":job.backend,"scenario":scenario,"size":size,"worlds":worlds,"seed":seed,"repeat":repeat,"steps":suite.steps,"dt":suite.dt,"scene_hash":hash(&job.scene),"job_hash":hash(&job),"directory":format!("runs/{id}")});
+        record["harness_build_stamp"] = metadata["build_stamp"].clone();
+        if let Some(reason) = skip {
+            record["status"] = json!("skipped");
+            record["error"] = json!(reason);
+            record["gpu_timing"] = json!({"status":"not_collected","reason":"trial skipped"});
+            record["memory"] = json!({"status":"not_collected","reason":"trial skipped"});
+            atomic_json(
+                &dir.join("skip.json"),
+                &json!({"reason":reason,"created_unix":epoch}),
+            )?;
+            if !dir.join("adapter.log").exists() {
+                fs::write(dir.join("adapter.log"), format!("Skipped: {reason}\n"))?;
+            }
+            println!("  skipped: {reason}");
+            records.push(record);
+            atomic_json(&out.join("results.json"), &records)?;
+            continue;
+        }
         let trial = (|| -> Result<AdapterResult> {
             subprocess(
                 adapter_command(root, &engine),
@@ -425,7 +590,7 @@ fn run(
             )?;
             Ok(serde_json::from_slice(&fs::read(dir.join("result.json"))?)?)
         })();
-        let mut record = json!({"id":id,"engine":engine,"backend":job.backend,"scenario":scenario,"size":size,"worlds":worlds,"seed":seed,"repeat":repeat,"steps":suite.steps,"dt":suite.dt,"scene_hash":hash(&job.scene),"job_hash":hash(&job),"directory":format!("runs/{id}")});
+
         match trial {
             Ok(r) => {
                 let v = validate_result(&job, &r);
@@ -496,9 +661,47 @@ fn run(
                 }
             }
         }
+        record["memory"] =
+            json!({"status":"not_collected", "reason":"wall-time trial did not pass"});
+        if record["status"] == "passed" {
+            let profile = Job {
+                mode: "memory".into(),
+                ..job.clone()
+            };
+            atomic_json(&dir.join("memory-job.json"), &profile)?;
+            let measurement = (|| -> Result<physmark_core::memory::MemoryMeasurement> {
+                subprocess(
+                    adapter_command(root, &engine),
+                    root,
+                    &dir.join("memory-job.json"),
+                    &dir.join("memory-result.json"),
+                    &dir.join("memory.log"),
+                    suite.timeout_seconds,
+                    threads,
+                )?;
+                let result: AdapterResult =
+                    serde_json::from_slice(&fs::read(dir.join("memory-result.json"))?)?;
+                let validation = validate_result(&profile, &result);
+                ensure!(
+                    validation.passed,
+                    "memory replay failed physics validation: {:?}",
+                    validation.reasons
+                );
+                let memory = result
+                    .memory
+                    .context("adapter omitted memory measurement")?;
+                memory.validate(&profile)?;
+                record["memory_validation"] = serde_json::to_value(validation)?;
+                Ok(memory)
+            })();
+            record["memory"] = match measurement {
+                Ok(memory) => serde_json::to_value(memory)?,
+                Err(error) => json!({"status":"error", "reason":format!("{error:#}")}),
+            };
+        }
         println!(
-            "  {} / GPU {}",
-            record["status"], record["gpu_timing"]["status"]
+            "  {} / GPU {} / memory {}",
+            record["status"], record["gpu_timing"]["status"], record["memory"]["status"]
         );
         if suite.capture && repeat == 0 && seed == suite.seeds[0] && record["status"] == "passed" {
             let capture = Job {
@@ -552,6 +755,7 @@ fn run(
             r["status"] != "passed"
                 || r.get("capture_error").is_some()
                 || r["gpu_timing"]["status"] == "error"
+                || r["memory"]["status"] == "error"
         })
         .count();
     ensure!(
@@ -671,6 +875,8 @@ fn main() -> Result<()> {
             threads,
             backend,
             no_capture,
+            resume,
+            skip_cases,
             timeout,
             output,
         } => {
@@ -702,7 +908,7 @@ fn main() -> Result<()> {
             if no_capture {
                 s.capture = false;
             }
-            run(&root, s, threads, backend, output)
+            run(&root, s, threads, backend, output, resume, skip_cases)
         }
         Action::Report {
             directory,
@@ -714,6 +920,36 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn physical_footprint_can_read_current_process() {
+        assert!(process_footprint(std::process::id()).unwrap() > 0);
+    }
+    #[test]
+    fn resume_requires_identical_workload_pins_and_machine() {
+        let original = json!({"schema_version":1,"suite":{"sizes":[8,128,1024],"repeats":3},
+            "backends":{"nexus":"metal"},"threads_requested":1,"source_pins":{"nexus":"abc"},
+            "lock_hash":"abc","python_packages":"packages","hardware":{"cpu":"test"},"rust":"1.98"});
+        validate_resume_metadata(&original, &original).unwrap();
+        let mut current = original.clone();
+        current["build_stamp"] = json!("new controller");
+        validate_resume_metadata(&original, &current).unwrap();
+        for key in [
+            "suite",
+            "backends",
+            "threads_requested",
+            "source_pins",
+            "lock_hash",
+            "hardware",
+            "python_packages",
+        ] {
+            let mut changed = original.clone();
+            changed[key] = json!("changed");
+            assert!(validate_resume_metadata(&original, &changed).is_err());
+        }
+        assert!(parse_skip_cases(&["mjx:stacks:1024:1=memory limit".into()]).is_ok());
+        assert!(parse_skip_cases(&["mjx:stacks:1024:1=".into()]).is_err());
+    }
     #[test]
     fn process_failure_and_timeout_are_errors() {
         let root =

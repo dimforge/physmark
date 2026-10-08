@@ -1,10 +1,12 @@
 use rapier3d as engine;
 include!("../../common_rust.rs");
 use anyhow::{Result, ensure};
+use physmark_core::memory::MemorySampler;
 use physmark_core::{AdapterResult, Frame, read_job};
 use std::time::Instant;
 fn main() -> Result<()> {
     let (job, path) = read_job()?;
+    let memory = (job.mode == "memory").then(|| MemorySampler::new(&job.backend));
     ensure!(job.backend == "cpu", "Rapier only supports cpu");
     rayon::ThreadPoolBuilder::new()
         .num_threads(job.threads)
@@ -17,6 +19,9 @@ fn main() -> Result<()> {
     };
     let mut worlds = make();
     let setup = start.elapsed().as_secs_f64();
+    if let Some(memory) = &memory {
+        memory.sample("setup");
+    }
     let start = Instant::now();
     for _ in 0..job.warmup.max(job.steps) {
         for (w, _) in &mut worlds {
@@ -24,7 +29,13 @@ fn main() -> Result<()> {
         }
     }
     let warmup = start.elapsed().as_secs_f64();
+    if let Some(memory) = &memory {
+        memory.sample("warmup");
+    }
     worlds = make();
+    if let Some(memory) = &memory {
+        memory.sample("reset");
+    }
     let poses = |worlds: &Vec<(PhysicsWorld, Vec<RigidBodyHandle>)>| -> Vec<[f64; 7]> {
         worlds
             .iter()
@@ -58,6 +69,7 @@ fn main() -> Result<()> {
         }
     }
     let elapsed = start.elapsed().as_secs_f64();
+    let memory = memory.map(|sampler| sampler.finish(job.steps));
     let awake = worlds
         .iter()
         .map(|(w, _)| {
@@ -79,6 +91,7 @@ fn main() -> Result<()> {
         settings: serde_json::json!({"solver":"Rapier default TGS", "solver_iterations":worlds[0].0.integration_parameters.num_solver_iterations,"precision":"f32","sleeping":false,"warmup_steps_effective":job.warmup.max(job.steps),"threads":job.threads,"world_execution":"serial","parallel_feature":true}),
         frames,
         gpu_timing: None,
+        memory,
     };
     std::fs::write(path, serde_json::to_vec_pretty(&result)?)?;
     Ok(())

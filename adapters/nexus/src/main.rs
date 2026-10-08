@@ -3,6 +3,7 @@ include!("../../common_rust.rs");
 use anyhow::{Result, bail};
 use khal::backend::{Backend, GpuBackend, GpuTimestamps};
 use nexus3d::prelude::*;
+use physmark_core::memory::MemorySampler;
 use physmark_core::{AdapterResult, Frame, GpuTiming, Job, read_job};
 use std::time::Instant;
 async fn state(job: &Job, b: &GpuBackend) -> Result<(NexusState, Vec<Vec<RigidBodyHandle>>)> {
@@ -56,6 +57,7 @@ fn main() -> Result<()> {
 }
 async fn run() -> Result<()> {
     let (job, path) = read_job()?;
+    let memory = (job.mode == "memory").then(|| MemorySampler::new(&job.backend));
     let b = match job.backend.as_str() {
         #[cfg(feature = "metal")]
         "metal" => GpuBackend::Metal(khal::backend::metal::Metal::new()?),
@@ -76,14 +78,23 @@ async fn run() -> Result<()> {
     pipeline.preload_pipelines(&b, NexusPipelineMask::RBD)?;
     b.synchronize()?;
     let setup = start.elapsed().as_secs_f64();
+    if let Some(memory) = &memory {
+        memory.sample("setup");
+    }
     let start = Instant::now();
     for _ in 0..job.warmup.max(job.steps) {
         pipeline.simulate(&b, &mut s, None).await?;
     }
     b.synchronize()?;
     let warmup = start.elapsed().as_secs_f64();
+    if let Some(memory) = &memory {
+        memory.sample("warmup");
+    }
     let (mut s, h) = state(&job, &b).await?;
     b.synchronize()?;
+    if let Some(memory) = &memory {
+        memory.sample("reset");
+    }
     let mut frames = vec![];
     if job.mode == "capture" {
         frames.push(Frame {
@@ -180,6 +191,7 @@ async fn run() -> Result<()> {
     }
     b.synchronize()?;
     let elapsed = start.elapsed().as_secs_f64();
+    let memory = memory.map(|sampler| sampler.finish(job.steps));
     let final_poses = poses(&job, &b, &s, &h).await?;
     let gpu_timing = if enabled {
         let evidence = serde_json::json!({"step_seconds":step_seconds,"pass_seconds":pass_totals});
@@ -216,6 +228,7 @@ async fn run() -> Result<()> {
         settings: serde_json::json!({"solver":"TGS soft", "solver_iterations":4,"precision":"f32","sleeping":false,"warmup_steps_effective":job.warmup.max(job.steps),"sleeping_implementation":"no sleeping in GPU rigid pipeline", "world_execution":"native_batch","graph_capture":false,"collision_capacity":(job.scene.size*32).max(128)}),
         frames,
         gpu_timing,
+        memory,
     };
     std::fs::write(path, serde_json::to_vec_pretty(&result)?)?;
     Ok(())

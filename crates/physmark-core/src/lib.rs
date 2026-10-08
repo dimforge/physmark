@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::f64::consts::PI;
 
+pub mod memory;
+
 pub const SCENARIOS: &[&str] = &[
     "free_fall",
     "box_pile",
@@ -85,6 +87,8 @@ pub struct AdapterResult {
     pub frames: Vec<Frame>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gpu_timing: Option<GpuTiming>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory: Option<memory::MemoryMeasurement>,
 }
 /// Optional device measurement from an independent profiling process, never a wall-clock fallback.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -169,7 +173,7 @@ impl Job {
             "invalid timestep"
         );
         ensure!(
-            ["timing", "capture", "gpu_timing"].contains(&self.mode.as_str()),
+            ["timing", "capture", "gpu_timing", "memory"].contains(&self.mode.as_str()),
             "invalid run mode"
         );
         ensure!(
@@ -521,6 +525,7 @@ mod tests {
             settings: serde_json::json!({}),
             frames: vec![],
             gpu_timing: None,
+            memory: None,
         };
         assert!(!validate_result(&j, &r).passed);
         let b = &j.scene.bodies[0];
