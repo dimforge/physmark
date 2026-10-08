@@ -55,6 +55,21 @@ def summarize(records, suite=None):
                 for seed in suite["seeds"]
                 for repeat in range(suite["repeats"])
             }
+        gpu = [
+            r
+            for r in good
+            if r.get("gpu_timing", {}).get("status") == "available"
+            and isinstance(r.get("gpu_ms_per_step"), (int, float))
+            and math.isfinite(r["gpu_ms_per_step"])
+            and r["gpu_ms_per_step"] > 0
+        ]
+        gpu_values = [r["gpu_ms_per_step"] for r in gpu]
+        methods = {
+            (r["gpu_timing"].get("method"), r["gpu_timing"].get("scope")) for r in gpu
+        }
+        gpu_complete = complete and len(gpu) == expected and len(methods) == 1
+        if methods and any(not method or not scope for method, scope in methods):
+            gpu_complete = False
         rows.append(
             dict(
                 engine=engine,
@@ -70,6 +85,13 @@ def summarize(records, suite=None):
                 p75_ms=float(np.percentile(values, 75)) if values else None,
                 min_ms=min(values) if values else None,
                 max_ms=max(values) if values else None,
+                gpu_available=len(gpu),
+                gpu_eligible=gpu_complete,
+                gpu_method=gpu[0]["gpu_timing"].get("method") if gpu else None,
+                gpu_scope=gpu[0]["gpu_timing"].get("scope") if gpu else None,
+                gpu_median_ms=float(np.median(gpu_values)) if gpu_values else None,
+                gpu_p25_ms=float(np.percentile(gpu_values, 25)) if gpu_values else None,
+                gpu_p75_ms=float(np.percentile(gpu_values, 75)) if gpu_values else None,
             )
         )
     return rows
@@ -113,7 +135,7 @@ def leaderboard(rows, engines):
 def curves(rows, out):
     files = []
     for scenario, worlds in sorted({(r["scenario"], r["worlds"]) for r in rows}):
-        fig, ax = plt.subplots(figsize=(7.5, 4.5), layout="constrained")
+        fig, ax = plt.subplots(figsize=(9, 5.5), layout="constrained")
         for engine in COLORS:
             rs = sorted(
                 [
@@ -131,7 +153,11 @@ def curves(rows, out):
             x = [r["size"] for r in rs]
             y = [r["median_ms"] for r in rs]
             ax.plot(
-                x, y, "o-", label=f"{engine} / {rs[0]['backend']}", color=COLORS[engine]
+                x,
+                y,
+                "o-",
+                label=f"{engine} / {rs[0]['backend']} · sync",
+                color=COLORS[engine],
             )
             ax.fill_between(
                 x,
@@ -140,11 +166,36 @@ def curves(rows, out):
                 color=COLORS[engine],
                 alpha=0.15,
             )
+            device = [r for r in rs if r.get("gpu_eligible")]
+            # Never connect measurements obtained using different profilers/scopes.
+            for method, scope in sorted(
+                {(r["gpu_method"], r["gpu_scope"]) for r in device}
+            ):
+                ds = [
+                    r
+                    for r in device
+                    if (r["gpu_method"], r["gpu_scope"]) == (method, scope)
+                ]
+                gx = [r["size"] for r in ds]
+                ax.plot(
+                    gx,
+                    [r["gpu_median_ms"] for r in ds],
+                    "s--",
+                    color=COLORS[engine],
+                    label=f"{engine} / {ds[0]['backend']} · GPU timestamps",
+                )
+                ax.fill_between(
+                    gx,
+                    [r["gpu_p25_ms"] for r in ds],
+                    [r["gpu_p75_ms"] for r in ds],
+                    color=COLORS[engine],
+                    alpha=0.10,
+                )
         ax.set(
             xscale="log",
             yscale="log",
             xlabel="Dynamic bodies per world",
-            ylabel="Synchronized wall time / step (ms)",
+            ylabel="Time / step across all worlds (ms)",
             title=f"{scenario.replace('_', ' ')} · {worlds} world(s)",
         )
         ax.grid(True, alpha=0.2)
@@ -342,12 +393,12 @@ def render(record, out, no_video=False):
 
 HTML = """<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>PhysMark — __TITLE__</title>
 <style>:root{color-scheme:dark;--bg:#0d141b;--panel:#17222e;--line:#304252;--text:#eaf1f7;--muted:#a5b8c7;--accent:#41dcc3}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.6 system-ui,sans-serif}main{max-width:1400px;margin:auto;padding:38px}header{display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--line);padding-bottom:28px}.brand{font-size:30px;font-weight:750;letter-spacing:-1px}small,.muted{color:var(--muted)}h1{font-size:42px;letter-spacing:-1.5px;margin:30px 0 8px}h2{font-size:22px;margin-top:38px}p{max-width:970px}a{color:var(--accent)}.stats,.leaders,.gallery,.charts{display:grid;gap:16px;grid-template-columns:repeat(auto-fit,minmax(240px,1fr))}.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:22px}.number{font-size:30px;font-weight:700}.leaders .score{font-size:34px;font-weight:750;color:var(--accent)}table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}th,td{text-align:left;padding:11px;border-bottom:1px solid var(--line);white-space:nowrap}th{color:var(--muted);font-weight:500}select,input{background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:10px;font:inherit;margin:0 8px 12px 0}.scroll{overflow:auto}.passed{color:#52dfb1}.error,.invalid{color:#ff8d95}.charts{grid-template-columns:repeat(auto-fit,minmax(400px,1fr))}.charts img{width:100%;background:white;border-radius:8px}.gallery{grid-template-columns:repeat(auto-fit,minmax(300px,1fr))}.gallery video,.gallery img{width:100%;border-radius:8px}.gallery .card{padding:12px}.tag{display:inline-block;border:1px solid var(--line);padding:3px 9px;border-radius:16px;font-size:12px}details{margin-top:24px}pre{white-space:pre-wrap;overflow-wrap:anywhere;color:var(--muted);font-size:12px}footer{margin-top:50px;border-top:1px solid var(--line);padding-top:22px;color:var(--muted)}@media(max-width:650px){main{padding:20px}h1{font-size:32px}.charts{grid-template-columns:1fr}header{display:block}}</style>
-<main><header><div class="brand">physmark<span style="color:var(--accent)">.</span></div><div class="muted">Physics, measured. <span class="tag">LOCAL BENCHMARK</span></div></header><h1>__TITLE__</h1><p class="muted">__HARDWARE__ · __DATE__<br>Synchronized physics stepping. Rendering and compilation excluded. Sleeping disabled.</p><div class="stats" id="stats"></div><h2>Leaderboard</h2><p class="muted">Geometric mean speed relative to native MuJoCo across every case in this suite (higher is faster). A score requires every requested trial and every baseline case to pass. These are baseline sanity checks, not matched-accuracy results. CPU and GPU entries are labelled separately.</p><div class="leaders" id="leaders"></div><h2>Performance curves</h2><p class="muted">Median wall time per simulation step across all worlds; shaded bands show the 25th–75th percentiles across repeats and seeds. Incomplete cases are omitted.</p><div class="charts">__CURVES__</div><h2>Trials</h2><select id="engine"><option value="">All engines</option></select><select id="scenario"><option value="">All scenarios</option></select><select id="status"><option value="">All outcomes</option><option>passed</option><option>invalid</option><option>error</option></select><div class="scroll"><table><thead><tr><th>Engine / backend</th><th>Scenario</th><th>Bodies × worlds</th><th>Seed / repeat</th><th>ms / step</th><th>World steps / s</th><th>Outcome</th><th>Evidence</th></tr></thead><tbody id="trials"></tbody></table></div><h2>Simulation gallery</h2><p class="muted">Independent untimed replay, rendered by the same renderer and camera rules. Batched cases show world 0. Videos play at simulated time.</p><div class="gallery">__GALLERY__</div><details><summary>Methodology, source pins and machine metadata</summary><pre id="metadata"></pre></details><footer><a href="results.json">Raw trials</a> · <a href="summary.json">Summary statistics</a> · <a href="metadata.json">Provenance</a> · PhysMark protocol v1<br>No single score establishes physical accuracy. Inspect solver settings, validation errors, coverage and simulations alongside timing.</footer></main>
+<main><header><div class="brand">physmark<span style="color:var(--accent)">.</span></div><div class="muted">Physics, measured. <span class="tag">LOCAL BENCHMARK</span></div></header><h1>__TITLE__</h1><p class="muted">__HARDWARE__ · __DATE__<br>Synchronized physics stepping. Rendering and compilation excluded. Sleeping disabled.</p><div class="stats" id="stats"></div><h2>Leaderboard · synchronized time</h2><p class="muted">Geometric mean speed relative to native MuJoCo across every case in this suite (higher is faster). A score requires every requested trial and every baseline case to pass. These are baseline sanity checks, not matched-accuracy results. CPU and GPU entries are labelled separately.</p><div class="leaders" id="leaders"></div><h2>Performance curves</h2><p class="muted">Solid lines: synchronized wall time. Dashed lines: device timestamps from an independent warmed replay. Median time per simulation step across all worlds; shading shows the 25th–75th percentiles across repeats and seeds. Each metric requires complete coverage. GPU scopes differ (pass sums, activity sums or activity unions); consult the table below. Profiling may alter scheduling; instrumented GPU times can exceed unprofiled synchronized times. The leaderboard uses only synchronized times.</p><div class="charts">__CURVES__</div><h2>GPU timing coverage</h2><div class="scroll">__GPU_STATUS__</div><h2>Trials</h2><select id="engine"><option value="">All engines</option></select><select id="scenario"><option value="">All scenarios</option></select><select id="status"><option value="">All outcomes</option><option>passed</option><option>invalid</option><option>error</option></select><div class="scroll"><table><thead><tr><th>Engine / backend</th><th>Scenario</th><th>Bodies × worlds</th><th>Seed / repeat</th><th>Sync ms / step</th><th>GPU ms / step</th><th>GPU timing</th><th>World steps / s</th><th>Outcome</th><th>Evidence</th></tr></thead><tbody id="trials"></tbody></table></div><h2>Simulation gallery</h2><p class="muted">Independent untimed replay, rendered by the same renderer and camera rules. Batched cases show world 0. Videos play at simulated time.</p><div class="gallery">__GALLERY__</div><details><summary>Methodology, source pins and machine metadata</summary><pre id="metadata"></pre></details><footer><a href="results.json">Raw trials</a> · <a href="summary.json">Summary statistics</a> · <a href="metadata.json">Provenance</a> · PhysMark protocol v1<br>No single score establishes physical accuracy. Inspect solver settings, validation errors, coverage and simulations alongside timing.</footer></main>
 <script>const DATA=__DATA__;const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));const fmt=x=>x==null?'—':Number(x).toLocaleString(undefined,{maximumSignificantDigits:4});
 document.querySelector('#stats').innerHTML=[['Engines',DATA.leaders.length],['Trials',DATA.records.length],['Passed',DATA.records.filter(r=>r.status==='passed').length],['Cases',new Set(DATA.rows.map(r=>[r.scenario,r.size,r.worlds].join('/'))).size]].map(([label,n])=>`<div class="card"><small>${label}</small><div class="number">${n}</div></div>`).join('');
 document.querySelector('#leaders').innerHTML=DATA.leaders.map((r,i)=>`<div class="card"><small>${r.score==null?'UNRANKED':'#'+(i+1)} · ${esc(r.backend)}</small><h3>${esc(r.engine)}</h3><div class="score">${r.score==null?'—':fmt(r.score)+'×'}</div><small>${r.passed}/${r.total} trials passed${r.score==null?' · incomplete coverage or missing baseline':''}</small></div>`).join('');
 for(const field of ['engine','scenario']){const el=document.querySelector('#'+field);for(const v of [...new Set(DATA.records.map(r=>r[field]))].sort()){const opt=document.createElement('option');opt.textContent=v;el.append(opt)}}
-function draw(){document.querySelector('#trials').innerHTML=DATA.records.filter(r=>['engine','scenario','status'].every(k=>!document.querySelector('#'+k).value||r[k]===document.querySelector('#'+k).value)).map(r=>`<tr><td>${esc(r.engine)} <small>${esc(r.backend)}</small></td><td>${esc(r.scenario)}</td><td>${r.size} × ${r.worlds}</td><td>${r.seed} / ${r.repeat}</td><td>${fmt(r.ms_per_step)}</td><td>${fmt(r.world_steps_per_second)}</td><td class="${r.status}" title="${esc(r.error||r.validation?.reasons.join('; ')||'')}">${r.status}</td><td><a href="${r.directory}/job.json">job</a> · <a href="${r.directory}/adapter.log">log</a>${r.status!=='error'?` · <a href="${r.directory}/result.json">result</a>`:''}</td></tr>`).join('')}
+function draw(){document.querySelector('#trials').innerHTML=DATA.records.filter(r=>['engine','scenario','status'].every(k=>!document.querySelector('#'+k).value||r[k]===document.querySelector('#'+k).value)).map(r=>`<tr><td>${esc(r.engine)} <small>${esc(r.backend)}</small></td><td>${esc(r.scenario)}</td><td>${r.size} × ${r.worlds}</td><td>${r.seed} / ${r.repeat}</td><td>${fmt(r.ms_per_step)}</td><td>${fmt(r.gpu_ms_per_step)}</td><td title="${esc(r.gpu_timing?.reason||[r.gpu_timing?.method,r.gpu_timing?.scope].filter(Boolean).join(' / '))}">${esc(r.gpu_timing?.status||'not_collected')}</td><td>${fmt(r.world_steps_per_second)}</td><td class="${r.status}" title="${esc(r.error||r.validation?.reasons.join('; ')||'')}">${r.status}</td><td><a href="${r.directory}/job.json">job</a> · <a href="${r.directory}/adapter.log">log</a>${r.status!=='error'?` · <a href="${r.directory}/result.json">result</a>`:''}${['available','unavailable','error'].includes(r.gpu_timing?.status)?` · <a href="${r.directory}/gpu.log">GPU log</a>`:''}${['available','unavailable'].includes(r.gpu_timing?.status)?` · <a href="${r.directory}/gpu-result.json">GPU result</a>`:''}</td></tr>`).join('')}
 for(const el of document.querySelectorAll('select'))el.addEventListener('change',draw);draw();document.querySelector('#metadata').textContent=JSON.stringify(DATA.metadata,null,2);</script></html>"""
 
 
@@ -399,8 +450,31 @@ def main():
         dict(records=records, metadata=metadata, rows=rows, leaders=leaders),
         allow_nan=False,
     ).replace("<", "\\u003c")
+    coverage = {}
+    for record in records:
+        timing = record.get(
+            "gpu_timing",
+            {"status": "not_collected", "reason": "Run predates GPU timing collection"},
+        )
+        key = (
+            record["engine"],
+            record["backend"],
+            timing["status"],
+            timing.get("method") or "—",
+            timing.get("scope") or "—",
+            timing.get("reason") or "",
+        )
+        coverage[key] = coverage.get(key, 0) + 1
+    gpu_status = "<table><thead><tr><th>Engine / backend</th><th>Trials</th><th>Status</th><th>Method / scope / reason</th></tr></thead><tbody>"
+    for (engine, backend, status, method, scope, reason), count in sorted(
+        coverage.items()
+    ):
+        detail = reason or f"{method} / {scope}"
+        gpu_status += f'<tr><td>{html.escape(engine)} / {html.escape(backend)}</td><td>{count}</td><td>{html.escape(status)}</td><td style="white-space:normal">{html.escape(detail)}</td></tr>'
+    gpu_status += "</tbody></table>"
     page = (
         HTML.replace("__TITLE__", html.escape(metadata["suite"]["name"]))
+        .replace("__GPU_STATUS__", gpu_status)
         .replace(
             "__HARDWARE__",
             html.escape(metadata["hardware"]["cpu"] or metadata["hardware"]["uname"]),

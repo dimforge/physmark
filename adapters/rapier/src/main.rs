@@ -78,6 +78,7 @@ fn main() -> Result<()> {
         awake_count: awake,
         settings: serde_json::json!({"solver":"Rapier default TGS", "solver_iterations":worlds[0].0.integration_parameters.num_solver_iterations,"precision":"f32","sleeping":false,"warmup_steps_effective":job.warmup.max(job.steps),"threads":job.threads,"world_execution":"serial","parallel_feature":true}),
         frames,
+        gpu_timing: None,
     };
     std::fs::write(path, serde_json::to_vec_pretty(&result)?)?;
     Ok(())

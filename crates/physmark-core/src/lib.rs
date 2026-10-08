@@ -83,6 +83,67 @@ pub struct AdapterResult {
     pub awake_count: usize,
     pub settings: serde_json::Value,
     pub frames: Vec<Frame>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu_timing: Option<GpuTiming>,
+}
+/// Optional device measurement from an independent profiling process, never a wall-clock fallback.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GpuTiming {
+    pub status: String,
+    pub seconds: Option<f64>,
+    pub method: Option<String>,
+    pub scope: Option<String>,
+    pub measured_steps: usize,
+    pub sample_count: usize,
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub details: serde_json::Value,
+}
+impl GpuTiming {
+    pub fn unavailable(reason: &str) -> Self {
+        Self {
+            status: "unavailable".into(),
+            seconds: None,
+            method: None,
+            scope: None,
+            measured_steps: 0,
+            sample_count: 0,
+            reason: Some(reason.into()),
+            details: serde_json::Value::Null,
+        }
+    }
+    pub fn validate(&self, job: &Job) -> Result<()> {
+        ensure!(
+            ["available", "unavailable", "not_applicable"].contains(&self.status.as_str()),
+            "invalid GPU timing status"
+        );
+        if self.status == "available" {
+            ensure!(job.backend != "cpu", "CPU timings cannot be GPU timestamps");
+            ensure!(
+                self.seconds.is_some_and(|s| s.is_finite() && s > 0.),
+                "invalid GPU duration"
+            );
+            ensure!(
+                self.measured_steps == job.steps && self.sample_count > 0,
+                "incomplete GPU timing coverage"
+            );
+            ensure!(
+                self.method.as_ref().is_some_and(|s| !s.is_empty())
+                    && self.scope.as_ref().is_some_and(|s| !s.is_empty()),
+                "missing GPU timing method/scope"
+            );
+        } else {
+            ensure!(
+                self.seconds.is_none() && self.measured_steps == 0 && self.sample_count == 0,
+                "unavailable GPU timing must not contain samples"
+            );
+            ensure!(
+                self.reason.as_ref().is_some_and(|s| !s.is_empty()),
+                "missing GPU unavailability reason"
+            );
+        }
+        Ok(())
+    }
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Validation {
@@ -108,7 +169,7 @@ impl Job {
             "invalid timestep"
         );
         ensure!(
-            self.mode == "timing" || self.mode == "capture",
+            ["timing", "capture", "gpu_timing"].contains(&self.mode.as_str()),
             "invalid run mode"
         );
         ensure!(
@@ -459,6 +520,7 @@ mod tests {
             awake_count: 0,
             settings: serde_json::json!({}),
             frames: vec![],
+            gpu_timing: None,
         };
         assert!(!validate_result(&j, &r).passed);
         let b = &j.scene.bodies[0];
@@ -476,6 +538,47 @@ mod tests {
         assert!(validate_result(&j, &r).passed);
         r.final_poses[0][0] = f64::NAN;
         assert!(!validate_result(&j, &r).passed);
+    }
+    #[test]
+    fn gpu_measurements_require_real_complete_device_samples() {
+        let mut job = Job {
+            schema_version: 1,
+            scene: scene("box_pile", 1, 42, 0.01).unwrap(),
+            engine: "nexus".into(),
+            backend: "metal".into(),
+            mode: "gpu_timing".into(),
+            worlds: 1,
+            steps: 10,
+            warmup: 10,
+            capture_stride: 1,
+            threads: 1,
+        };
+        job.validate().unwrap();
+        let mut timing = GpuTiming {
+            status: "available".into(),
+            seconds: Some(0.1),
+            method: Some("metal_timestamps".into()),
+            scope: Some("compute_passes".into()),
+            measured_steps: 10,
+            sample_count: 100,
+            reason: None,
+            details: serde_json::Value::Null,
+        };
+        timing.validate(&job).unwrap();
+        job.backend = "cpu".into();
+        assert!(timing.validate(&job).is_err());
+        job.backend = "metal".into();
+        timing.measured_steps = 9;
+        assert!(timing.validate(&job).is_err());
+        timing.measured_steps = 10;
+        for invalid in [0., -1., f64::NAN, f64::INFINITY] {
+            timing.seconds = Some(invalid);
+            assert!(timing.validate(&job).is_err());
+        }
+        let mut missing = GpuTiming::unavailable("queries unavailable");
+        missing.validate(&job).unwrap();
+        missing.seconds = Some(0.);
+        assert!(missing.validate(&job).is_err());
     }
     #[test]
     fn hinge_initial_anchors_match() {

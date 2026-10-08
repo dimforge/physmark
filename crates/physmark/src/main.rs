@@ -368,7 +368,7 @@ fn run(
         "output already exists; choose a new directory to preserve results"
     );
     fs::create_dir_all(out.join("runs"))?;
-    let metadata = json!({"schema_version":1,"created_unix":epoch,"suite":suite,"backends":backend_map,"threads_requested":threads,"source_pins":lock(root)?,"lock_hash":hash(&fs::read(root.join("engines.lock"))?),"build_stamp":stamp(root)?,"harness_commit":command_output(root,"git",&["rev-parse","HEAD"]),"harness_status":command_output(root,"git",&["status","--porcelain"]),"hardware":{"uname":command_output(root,"uname",&["-a"]),"cpu":command_output(root,"sysctl",&["-n","machdep.cpu.brand_string"]),"memory_bytes":command_output(root,"sysctl",&["-n","hw.memsize"]),"os":command_output(root,"sw_vers",&[]),"gpu":command_output(root,"system_profiler",&["SPDisplaysDataType"])},"rust":command_output(root,"rustc",&["--version"]),"python_packages":command_output(root,python(root).to_str().unwrap(),&["-c","import importlib.metadata,json;print(json.dumps({d.metadata['Name']:d.version for d in importlib.metadata.distributions()}))"]),"timing":"synchronized warmed fixed-horizon rollouts; setup, JIT, reset, readback and rendering excluded; separate process per trial; serial scheduling","quality":"baseline sanity gates, not accuracy-equated solvers","thread_note":"thread environment limits are requests; GPU and framework worker counts remain engine dependent"});
+    let metadata = json!({"schema_version":1,"created_unix":epoch,"suite":suite,"backends":backend_map,"threads_requested":threads,"source_pins":lock(root)?,"lock_hash":hash(&fs::read(root.join("engines.lock"))?),"build_stamp":stamp(root)?,"harness_commit":command_output(root,"git",&["rev-parse","HEAD"]),"harness_status":command_output(root,"git",&["status","--porcelain"]),"hardware":{"uname":command_output(root,"uname",&["-a"]),"cpu":command_output(root,"sysctl",&["-n","machdep.cpu.brand_string"]),"memory_bytes":command_output(root,"sysctl",&["-n","hw.memsize"]),"os":command_output(root,"sw_vers",&[]),"gpu":command_output(root,"system_profiler",&["SPDisplaysDataType"])},"rust":command_output(root,"rustc",&["--version"]),"python_packages":command_output(root,python(root).to_str().unwrap(),&["-c","import importlib.metadata,json;print(json.dumps({d.metadata['Name']:d.version for d in importlib.metadata.distributions()}))"]),"timing":"synchronized warmed fixed-horizon rollouts; setup, JIT, reset, readback and rendering excluded; separate process per trial; serial scheduling","gpu_timing":"independent warmed profiling process per passing GPU trial; device durations only; unavailable is never replaced by wall time; raw method and scope per trial; leaderboard remains synchronized wall time","quality":"baseline sanity gates, not accuracy-equated solvers","thread_note":"thread environment limits are requests; GPU and framework worker counts remain engine dependent"});
     atomic_json(&out.join("metadata.json"), &metadata)?;
     let mut records: Vec<Value> = vec![];
     let mut order = vec![];
@@ -444,7 +444,62 @@ fn run(
                 record["error"] = json!(format!("{e:#}"));
             }
         }
-        println!("  {}", record["status"]);
+        record["gpu_timing"] = json!({"status":if job.backend == "cpu" {"not_applicable"} else {"not_collected"},
+            "reason":if job.backend == "cpu" {"CPU backend"} else {"wall-time trial did not pass"}});
+        if job.backend != "cpu" && record["status"] == "passed" {
+            let profile = Job {
+                mode: "gpu_timing".into(),
+                ..job.clone()
+            };
+            atomic_json(&dir.join("gpu-job.json"), &profile)?;
+            let measurement = (|| -> Result<physmark_core::GpuTiming> {
+                subprocess(
+                    adapter_command(root, &engine),
+                    root,
+                    &dir.join("gpu-job.json"),
+                    &dir.join("gpu-result.json"),
+                    &dir.join("gpu.log"),
+                    suite.timeout_seconds,
+                    threads,
+                )?;
+                let r: AdapterResult =
+                    serde_json::from_slice(&fs::read(dir.join("gpu-result.json"))?)?;
+                ensure!(
+                    r.schema_version == 1 && r.engine == job.engine && r.backend == job.backend,
+                    "GPU replay identity mismatch"
+                );
+                let timing = r
+                    .gpu_timing
+                    .as_ref()
+                    .context("adapter omitted GPU timing status")?;
+                timing.validate(&profile)?;
+                if timing.status == "available" {
+                    let validation = validate_result(&profile, &r);
+                    ensure!(
+                        validation.passed,
+                        "GPU replay failed physics validation: {:?}",
+                        validation.reasons
+                    );
+                    record["gpu_validation"] = serde_json::to_value(validation)?;
+                    record["gpu_replay_elapsed_seconds"] = json!(r.elapsed_seconds);
+                }
+                Ok(timing.clone())
+            })();
+            match measurement {
+                Ok(timing) => {
+                    record["gpu_ms_per_step"] =
+                        json!(timing.seconds.map(|s| s * 1000. / job.steps as f64));
+                    record["gpu_timing"] = serde_json::to_value(timing)?;
+                }
+                Err(e) => {
+                    record["gpu_timing"] = json!({"status":"error","reason":format!("{e:#}")})
+                }
+            }
+        }
+        println!(
+            "  {} / GPU {}",
+            record["status"], record["gpu_timing"]["status"]
+        );
         if suite.capture && repeat == 0 && seed == suite.seeds[0] && record["status"] == "passed" {
             let capture = Job {
                 mode: "capture".into(),
@@ -493,7 +548,11 @@ fn run(
     report(root, &out, false)?;
     let failed = records
         .iter()
-        .filter(|r| r["status"] != "passed" || r.get("capture_error").is_some())
+        .filter(|r| {
+            r["status"] != "passed"
+                || r.get("capture_error").is_some()
+                || r["gpu_timing"]["status"] == "error"
+        })
         .count();
     ensure!(
         failed == 0,

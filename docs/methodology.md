@@ -20,6 +20,30 @@ The validation gates reject missing/nonfinite poses, nonunit quaternions, sleepi
 
 Only final physics state is gated in timing trials. Capture replays provide trajectories for visual diagnosis. Collision geometry is engine neutral, but analytic primitive collision algorithms can still differ.
 
+## GPU timestamps
+
+Every passing GPU wall-time trial is followed by a **separate profiling process** with the same scene, seed, worlds, timestep, warmup and measured horizon. It warms up and resets independently. Profiling, timestamp readback and trace export never run in the primary synchronized interval. Both replays must pass the physics gates before a GPU sample is accepted. CPU backends have no GPU sample. A capability-only response may return without running physics; it contains no duration and cannot enter a curve.
+
+| Engine/backend | Device timing method | Scope |
+| --- | --- | --- |
+| Nexus Metal | Khal Metal counter samples | Sum of timed compute-pass durations |
+| Nexus CUDA | Khal CUDA events | Sum of timed compute-pass durations |
+| Nexus WebGPU | Khal timestamp queries, if supported by adapter/device | Sum of timed compute-pass durations |
+| Newton CUDA (MuJoCo Warp solver) | Warp `ScopedTimer` activity results backed by CUDA events | Sum of Warp kernel, builtin, copy and memset durations |
+| Genesis CUDA | PyTorch/Kineto CUPTI activity trace, including non-Torch CUDA kernels | Union of GPU kernel, copy and memset intervals on device 0 |
+| MJX CUDA | JAX/XLA CUPTI activity trace | Union of GPU stream activity intervals on device 0 |
+| Genesis Metal | Unavailable with pinned Quadrants 1.3.3 | Its Metal runtime does not connect a device profiler; the generic kernel profiler is a host-clock profiler |
+
+Nexus collects each step exactly once, in batches of eight independent query managers. It synchronizes and harvests every batch so pending readbacks cannot silently skip steps. The adapter rejects empty, invalid or potentially exhausted query buffers. Raw per-step durations and totals per pass label are saved in `gpu-samples.json`. Profiling pass boundaries and batch barriers can change GPU scheduling; these samples describe the instrumented replay, not a subtraction from the uninstrumented wall time. On the M4 Max, per-pass counter sampling has significant overhead: GPU sample totals can exceed the uninstrumented synchronized duration. There is no assertion that the GPU curve must be lower. Query-buffer allocation adapts to supported sizes (up to 2048 pairs, the observed 32 KiB Metal limit), and records the selected capacity.
+
+Warp's outer `ScopedTimer.elapsed` is a **host** duration and is not used. Individual `timing_results[].elapsed` are device-event durations. Their sum can double-count overlapping streams and excludes work outside Warp's instrumentation. Genesis and MJX instead use a union of intervals to count overlapping device work once. Host trace lanes, CUDA API calls, aggregate XLA module lanes and other devices are excluded. These scopes are intentionally recorded rather than presented as equivalent kernel-only measurements. GPU clocks, contention and profiling overhead can differ between the two processes.
+
+CUPTI must be available and permitted on the NVIDIA machine. If a profiler produces only host events, GPU timing is **unavailable**, never zero and never replaced with synchronized time. Unsupported APIs and devices remain visible in the coverage table. Profiler process errors/timeouts and malformed data have a separate **error** status, preserve a passing wall result, and make the overall command fail so automation notices. Failed physics replays cannot supply a device sample.
+
+Reports draw solid synchronized-time curves and dashed GPU-timestamp curves with independent complete-coverage requirements. The GPU curve requires the same method and scope across repeats/seeds. Both use the median and interquartile range of per-rollout average milliseconds per step (across all worlds). The leaderboard uses synchronized time only. Old result files load unchanged and show GPU timing as not collected. Every GPU attempt retains `gpu-job.json`, `gpu.log`, and, on success, `gpu-result.json`; available profilers also retain their raw samples/traces.
+
+Source references: [Khal pinned backends](https://github.com/dimforge/khal/tree/58b02f2379f3542dbf5269804c3f2dfcdfc4e0b4/crates/khal/src/backend), [Genesis profiling guide](https://genesis-world.readthedocs.io/en/latest/user_guide/developers/profiling.html), [JAX profiling guide](https://docs.jax.dev/en/latest/profiling.html), [Quadrants 1.3.3 Metal runtime](https://github.com/Genesis-Embodied-AI/quadrants/blob/00423caa93b620f6f3ebbb5d3f26e74cf56ecf5b/quadrants/runtime/program_impls/metal/metal_program.cpp), [Quadrants profiler selection](https://github.com/Genesis-Embodied-AI/quadrants/blob/00423caa93b620f6f3ebbb5d3f26e74cf56ecf5b/quadrants/program/kernel_profiler.cpp).
+
 ## Repeatability and scope
 
 Record full source pins, Python/Rust locks, adapter build fingerprint, scene/job hashes, harness revision/dirty status, machine/OS/GPU description, settings and raw samples. The harness fingerprint includes uncommitted source content; publish results only with the corresponding source revision and lockfiles. Timings are hardware-, OS-, power-, temperature- and driver-dependent. Running unrelated heavy work affects them. Thread limits are requested through Rayon and common runtime environment variables; those are not a promise of identical framework worker counts.

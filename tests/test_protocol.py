@@ -126,3 +126,105 @@ def test_missing_and_duplicate_trials_withhold_scores():
     assert len(rows) == 4
     assert not any(r["eligible"] for r in rows)
     assert all(r["score"] is None for r in leaderboard(rows, suite["engines"]))
+
+
+def test_gpu_statistics_require_complete_consistent_coverage():
+    import copy
+
+    records = [
+        dict(
+            engine="nexus",
+            backend="metal",
+            scenario="box_pile",
+            size=4,
+            worlds=1,
+            seed=42,
+            repeat=i,
+            status="passed",
+            ms_per_step=10 + i * 2,
+            gpu_ms_per_step=1 + i * 2,
+            gpu_timing=dict(status="available", method="metal", scope="passes"),
+        )
+        for i in range(2)
+    ]
+    row = summarize(records)[0]
+    assert row["median_ms"] == 11 and row["gpu_median_ms"] == 2
+    assert row["eligible"] and row["gpu_eligible"]
+    partial = copy.deepcopy(records)
+    partial[1]["gpu_timing"] = dict(status="unavailable")
+    partial[1].pop("gpu_ms_per_step")
+    row = summarize(partial)[0]
+    assert row["eligible"] and not row["gpu_eligible"]
+    assert row["gpu_available"] == 1
+    records[1]["gpu_timing"]["scope"] = "different"
+    assert not summarize(records)[0]["gpu_eligible"]
+    records[1]["gpu_ms_per_step"] = float("nan")
+    assert not summarize(records)[0]["gpu_eligible"]
+    legacy = [
+        dict(
+            engine="mujoco",
+            backend="cpu",
+            scenario="box_pile",
+            size=4,
+            worlds=1,
+            status="passed",
+            ms_per_step=1,
+        )
+    ]
+    assert summarize(legacy)[0]["gpu_median_ms"] is None
+
+
+def test_trace_times_exclude_host_and_union_overlapping_gpu_intervals():
+    from gpu_timing import trace_device_time
+
+    def event(cat, start, duration, device=0):
+        return dict(ph="X", cat=cat, ts=start, dur=duration, args=dict(device=device))
+
+    trace = dict(
+        displayTimeUnit="ns",
+        traceEvents=[
+            event("cpu_op", 0, 10_000),
+            event("cuda_runtime", 0, 50_000),
+            event("kernel", 10, 10),
+            event("gpu_memcpy", 15, 10),
+            event("gpu_memset", 30, 5),
+            event("kernel", 0, 1000, device=1),
+        ],
+    )
+    # Union is [10,25] + [30,35] = 20 us, not 25 us, regardless of displayTimeUnit.
+    seconds, count = trace_device_time(trace, "kineto")
+    assert seconds == 20 / 1_000_000 and count == 3
+    trace["traceEvents"] = [event("cpu_op", 0, 100)]
+    assert trace_device_time(trace, "kineto") is None
+
+
+def test_xla_trace_requires_gpu_device_and_stream_metadata():
+    from gpu_timing import trace_device_time
+
+    def metadata(name, pid, tid, label):
+        return dict(ph="M", name=name, pid=pid, tid=tid, args=dict(name=label))
+
+    trace = dict(
+        traceEvents=[
+            metadata("process_name", 10, 0, "/device:GPU:0"),
+            metadata("process_name", 20, 0, "/host:CPU"),
+            metadata("thread_name", 10, 1, "Stream #7 (Kernel)"),
+            metadata("thread_name", 10, 2, "XLA Modules"),
+            metadata("thread_name", 20, 1, "Stream #7"),
+            dict(ph="X", pid=10, tid=1, ts=100, dur=25),
+            dict(ph="X", pid=10, tid=2, ts=0, dur=10000),
+            dict(ph="X", pid=20, tid=1, ts=0, dur=10000),
+        ]
+    )
+    assert trace_device_time(trace, "xla") == (25 / 1_000_000, 1)
+    assert trace_device_time(trace, "xla", device=1) is None
+
+
+def test_gpu_preflight_never_labels_cpu_or_genesis_metal_as_device_time():
+    from gpu_timing import preflight
+
+    for engine, backend in [("mjx", "cpu"), ("genesis", "metal")]:
+        result = preflight(dict(engine=engine, backend=backend))
+        assert result["seconds"] is None and result["sample_count"] == 0
+        assert result["reason"]
+    assert preflight(dict(engine="mjx", backend="cuda")) is None

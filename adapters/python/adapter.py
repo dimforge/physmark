@@ -407,10 +407,30 @@ class Genesis:
         return len(self.ids) * self.job["worlds"]
 
 
-def run(job):
+def run(job, evidence_dir=None):
     import numpy as np
 
     assert job["schema_version"] == 1
+    gpu_timing = None
+    if job["mode"] == "gpu_timing":
+        from gpu_timing import preflight, profile
+
+        gpu_timing = preflight(job)
+        if gpu_timing is not None:
+            # A capability result contains no simulation sample and is never ranked.
+            return dict(
+                schema_version=1,
+                engine=job["engine"],
+                backend=job["backend"],
+                setup_seconds=0,
+                warmup_seconds=0,
+                elapsed_seconds=0,
+                final_poses=[],
+                awake_count=0,
+                settings={},
+                frames=[],
+                gpu_timing=gpu_timing,
+            )
     xml = mjcf(job["scene"])
     start = time.perf_counter()
     sim = {"mujoco": Mujoco, "mjx": MJX, "newton": Newton, "genesis": Genesis}[
@@ -443,6 +463,10 @@ def run(job):
                 }
             )
         elapsed = time.perf_counter() - start
+    elif job["mode"] == "gpu_timing":
+        start = time.perf_counter()
+        gpu_timing = profile(sim, job, evidence_dir)
+        elapsed = time.perf_counter() - start
     else:
         start = time.perf_counter()
         sim.advance(job["steps"])
@@ -459,6 +483,7 @@ def run(job):
         "awake_count": sim.awake(),
         "settings": sim.settings,
         "frames": frames,
+        "gpu_timing": gpu_timing,
     }
 
 
@@ -466,8 +491,8 @@ if __name__ == "__main__":
     if len(sys.argv) != 3:
         raise SystemExit("usage: adapter.py JOB.json RESULT.json")
     job = json.loads(Path(sys.argv[1]).read_text())
-    result = run(job)
     path = Path(sys.argv[2])
+    result = run(job, path.parent)
     temporary = path.with_suffix(".tmp")
     temporary.write_text(json.dumps(result, allow_nan=False, indent=2))
     temporary.replace(path)

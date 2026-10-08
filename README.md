@@ -27,7 +27,7 @@ cargo run --release -- run --suite suites/smoke.toml
 
 `build` installs into `.physmark/envs/python`, builds the pinned upstream sources in `.physmark/sources`, and compiles the adapters in release mode. It never installs into your system Python. All Python engines share a version-locked environment in this first release; each trial runs in a fresh process. Native adapters have independent Cargo lockfiles.
 
-Open the printed `results/<run>/index.html` directly in a browser. The report works offline and links to all jobs, raw timings, logs, trajectories, settings and source/machine metadata. Results and build caches are ignored by Git. No data is uploaded.
+Open the printed `results/<run>/index.html` directly in a browser. The report works offline and links to all jobs, raw timings, logs, trajectories, settings and source/machine metadata. GPU trials also collect device timestamps in a separate profiling replay when supported: solid curves show synchronized time and dashed curves show GPU time. The coverage table explains unavailable measurements; the leaderboard uses synchronized time. See [timing methodology](docs/methodology.md#gpu-timestamps). Results and build caches are ignored by Git. No data is uploaded.
 
 ```sh
 # A scale demonstration with repeated trials and common-renderer videos:
