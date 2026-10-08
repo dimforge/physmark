@@ -1,0 +1,13 @@
+name = "standard"
+engines = ["rapier", "nexus", "genesis", "newton", "mujoco", "mjx"]
+scenarios = ["free_fall", "box_pile", "sphere_pile", "mixed_pile", "stacks", "dominoes", "pendulums", "friction_ramp"]
+sizes = [8, 32, 128]
+worlds = [1]
+steps = 600
+warmup = 30
+repeats = 5
+seeds = [42, 97, 193]
+dt = 0.008333333333333333
+capture = true
+capture_stride = 4
+timeout_seconds = 1800

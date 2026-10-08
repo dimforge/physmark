@@ -1,0 +1,9 @@
+/.physmark/
+/target/
+/results/
+/adapters/*/target/
+__pycache__/
+*.pyc
+.DS_Store
+
+.pytest_cache/

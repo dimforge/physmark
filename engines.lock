@@ -1,0 +1,38 @@
+schema_version = 1
+
+[engines.rapier]
+repository = "https://github.com/dimforge/rapier.git"
+commit = "846c463e47ef654d6a6ce6fa0e455f3a1e98c2ec"
+adapter = "rust"
+
+[engines.nexus]
+repository = "https://github.com/dimforge/nexus.git"
+commit = "1cfbd768db6ac770f302a7f432a43df42953eb67"
+adapter = "rust"
+
+[engines.genesis]
+repository = "https://github.com/Genesis-Embodied-AI/Genesis.git"
+commit = "02908fe6474d8b073b662347a8794614fa250658"
+adapter = "python"
+
+[engines.newton]
+repository = "https://github.com/newton-physics/newton.git"
+commit = "dd2dace79fd47dd6c198f4a7a2f894c2aa47dcc4"
+adapter = "python"
+solver = "SolverMuJoCo(use_mujoco_cpu=false)"
+
+[engines.mujoco]
+repository = "https://github.com/google-deepmind/mujoco.git"
+commit = "16dafd8f26835d72d44842b3a5d69c233048a8e7"
+adapter = "python"
+
+[engines.mjx]
+repository = "https://github.com/google-deepmind/mujoco.git"
+commit = "16dafd8f26835d72d44842b3a5d69c233048a8e7"
+adapter = "python"
+source = "mujoco"
+solver = "jax"
+
+[dependencies.mujoco-warp]
+repository = "https://github.com/google-deepmind/mujoco_warp.git"
+commit = "6058495b38d12c0db83fcaaea739c7200cffb43c"

@@ -1,0 +1,27 @@
+[package]
+name = "physmark-nexus"
+version = "0.1.0"
+edition = "2024"
+[workspace]
+[features]
+default = ["metal"]
+metal = ["nexus3d/metal", "khal/metal"]
+webgpu = ["nexus3d/webgpu", "khal/webgpu"]
+cpu = ["nexus3d/cpu", "khal/cpu"]
+cuda = ["nexus3d/cuda", "khal/cuda"]
+[dependencies]
+physmark-core = { path = "../../crates/physmark-core" }
+nexus3d = { path = "../../.physmark/sources/nexus/crates/nexus3d", default-features = false, features = ["dim3", "f32", "rbd"] }
+khal = "0.3"
+anyhow = "1"
+serde_json = "1"
+pollster = "0.4"
+[patch.crates-io]
+khal = { git = "https://github.com/dimforge/khal", rev = "58b02f2379f3542dbf5269804c3f2dfcdfc4e0b4" }
+khal-derive = { git = "https://github.com/dimforge/khal", rev = "58b02f2379f3542dbf5269804c3f2dfcdfc4e0b4" }
+khal-std = { git = "https://github.com/dimforge/khal", rev = "58b02f2379f3542dbf5269804c3f2dfcdfc4e0b4" }
+khal-builder = { git = "https://github.com/dimforge/khal", rev = "58b02f2379f3542dbf5269804c3f2dfcdfc4e0b4" }
+vortx = { git = "https://github.com/dimforge/vortx", rev = "dae29b397e5635cbd5eb71bc599eb0a6d468387e" }
+vortx-shaders = { git = "https://github.com/dimforge/vortx", rev = "dae29b397e5635cbd5eb71bc599eb0a6d468387e" }
+[profile.release]
+lto = "thin"
