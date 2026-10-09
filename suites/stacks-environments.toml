@@ -1,7 +1,7 @@
-name = "Box stacks — environment scaling"
+name = "Brick structures — environment scaling"
 engines = ["rapier", "nexus", "genesis", "mujoco"]
-scenarios = ["stacks"]
-sizes = [8, 128]
+scenarios = ["brick_ring", "pyramids"]
+sizes = [128, 466]
 worlds = [1, 4, 16, 64, 256, 1024, 4096]
 steps = 240
 warmup = 240

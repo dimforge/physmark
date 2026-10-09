@@ -1,0 +1,17 @@
+# The Nexus 110k brick ring and 500k pyramids, each also at the other's scale and in between.
+# No capture: one frame of 500k bodies is about 70 MB of JSON.
+name = "Brick structures — 110K to 500K bodies"
+engines = ["rapier", "nexus", "genesis"]
+scenarios = ["brick_ring", "pyramids"]
+sizes = [110000, 250000, 505922]
+worlds = [1]
+steps = 240
+warmup = 240
+repeats = 3
+seeds = [42]
+dt = 0.008333333333333333
+capture = false
+capture_stride = 8
+timeout_seconds = 1800
+cpu_timeout_seconds = 1800
+skip_after_resource_limit = true

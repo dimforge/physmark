@@ -37,10 +37,13 @@ Open the printed `results/<run>/index.html` directly in a browser. The report wo
 # A scale demonstration with repeated trials and common-renderer videos:
 cargo run --release -- run --suite suites/demo.toml
 
-# Three box-stack scales, all six engines, repeated timings and captures:
+# Brick ring and pyramid walls at 1,000, 10,000 and 28,000 bodies, all six engines:
 cargo run --release -- run --suite suites/stacks-three-scales.toml
 
-# Environment scaling: 8/128 boxes, 1 to 4,096 environments:
+# The Nexus 110K brick ring and 500K pyramids, each also at the other's scale (no capture):
+cargo run --release -- run --suite suites/stacks-large.toml
+
+# Environment scaling: 128/466-body brick structures, 1 to 4,096 environments:
 cargo run --release -- run --suite suites/stacks-environments.toml
 
 # All eight features, each with two independent worlds:
@@ -99,9 +102,13 @@ All scenes use metres, kilograms, seconds, Z-up, identical explicit mass/inertia
 | `sphere_pile` | Sphere contacts and dense piles |
 | `mixed_pile` | Boxes, spheres and capsules with explicit mass properties |
 | `stacks` | Persistent contact, stacking and stability |
+| `brick_ring` | Running-bond ring wall of bricks smashed by a rolling sphere (the Nexus 110K ring, scaled) |
+| `pyramids` | Rows of triangular brick walls smashed by two rolling spheres (the Nexus 500K pyramids, scaled) |
 | `dominoes` | Rotational dynamics, contact propagation and slender bodies |
 | `pendulums` | Fixed-world revolute constraints and anchor drift |
 | `friction_ramp` | Inclined static geometry and frictional contact |
+
+`brick_ring` and `pyramids` are scaled versions of the `brick_ring_110k` and `pyramids_500k` stress scenes on Nexus's `rbd-performance` branch: 1 × 0.5 × 0.5 m bricks of density 1, smashed by spheres rolling in at 30 m/s. Size counts every dynamic body, spheres included. 110,000 reproduces the ring's proportions (radius 80 m, 40 courses, 10 bricks deep); 505,922 reproduces the 16 × 68 walls of 465 bricks. Other sizes rescale the ring radius and course count, or the number of 30-brick walls; the top course or last wall is left partial so the count is exact. The ground top is at z = 0 and gravity is 9.81 m/s², as in every other scene.
 
 Sizes and world counts are independent suite dimensions. Native MuJoCo and Rapier execute worlds serially; MJX uses `vmap`; Nexus, Genesis and Newton use their native batching. The report exposes this distinction. Sleeping/hibernation is disabled everywhere.
 
@@ -165,13 +172,13 @@ and robot environment scaling, with eight Rapier workers:
 ```
 
 This command assumes the release controller and selected engines have been built.
-It automatically generates plots, scene previews, replay videos and the four
-reports, with a shared landing page at `results/full-mac/index.html`.
+It automatically generates plots, scene previews, replay videos (except for the
+110K/500K brick structures, which are not captured) and the six reports, with a shared landing page at `results/full-mac/index.html`.
 Use `--resume` with the same output to
 continue an interrupted round. CPU subprocesses have a 120-second budget;
 subprocesses exceeding a resource limit cause remaining identical/larger
 environment counts of that engine/scene/size to be recorded as skipped. The
-previously stalled Genesis 128-box batches at 256+ environments are excluded.
+110K/500K brick structures use a 600-second CPU budget.
 
 For a resumed full Mac round, optional `skip-cases.json` in the output directory maps
 `engine:scenario:size:worlds` to an explicit reason. These exclusions are passed to

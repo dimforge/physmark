@@ -14,7 +14,9 @@ ROOT = Path(__file__).resolve().parents[1]
 PARTS = [
     ("rigid", "Rigid-body scale", "full-mac-rigid.toml", "Eight scenes at 8, 128, 1,024 and 10,000 bodies; one environment."),
     ("mpm", "Material points", "full-mac-mpm.toml", "Elastic, sand and liquid at 512, 4,096 and 32,768 particles; one environment."),
-    ("environments", "Stack environments", "full-mac-environments.toml", "8- and 128-box stacks across 1, 4, 16, 64, 256, 1,024 and 4,096 environments."),
+    ("stacks", "Brick structures", "full-mac-stacks.toml", "Brick ring and pyramid walls smashed by rolling spheres at 1,000, 10,000 and 28,000 bodies; one environment."),
+    ("stacks-large", "Large brick structures", "full-mac-stacks-large.toml", "The Nexus 110K brick ring and 500K pyramids, each also at the other's scale; no replay capture."),
+    ("environments", "Brick structure environments", "full-mac-environments.toml", "128- and 466-body brick rings and pyramids across 1, 4, 16, 64, 256, 1,024 and 4,096 environments."),
     ("robot", "Go1 robot environments", "robot.toml", "One 13-link, 12-actuator Go1 per environment; 1 through 4,096 independent environments."),
 ]
 
@@ -69,9 +71,6 @@ def main():
         if skip_file.exists():
             for case, reason in json.loads(skip_file.read_text()).items():
                 command += ['--skip-case', f'{case}={reason}']
-        if key == 'environments':
-            for n in [256, 1024, 4096]:
-                command += ['--skip-case', f'genesis:stacks:128:{n}=Previously stalled on Metal at 256 environments; larger medium batches excluded by user request']
         statuses[key] = dict(state='running', started_unix=time.time(), command=command)
         index(output, statuses)
         print(f'RUNNING {title}', flush=True)

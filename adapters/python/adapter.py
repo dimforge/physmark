@@ -89,6 +89,25 @@ def mjcf(scene):
     return ET.tostring(root, encoding="unicode")
 
 
+def initial_velocities(scene):
+    """(body, linear world velocity, angular world velocity) for bodies that start moving."""
+    return [
+        (b, b["velocity"], b.get("angular_velocity", [0, 0, 0]))
+        for b in scene["bodies"]
+        if b["dynamic"] and (any(b["velocity"]) or any(b.get("angular_velocity", [0, 0, 0])))
+    ]
+
+
+def to_body_frame(q, v):
+    """Rotates world vector `v` by the inverse of XYZW quaternion `q`."""
+    import numpy as np
+
+    u, w = -np.asarray(q[:3]), q[3]
+    v = np.asarray(v, dtype=float)
+    c = np.cross(u, v)
+    return (v + 2 * (w * c + np.cross(u, c))).tolist()
+
+
 def robot_settings(job):
     r = job["scene"]["robot"]
     return {k: r[k] for k in ("model", "source_commit", "source_path", "initial_keyframe", "target_keyframe", "ctrl", "self_contacts")}
@@ -134,6 +153,14 @@ class Mujoco:
             if self.job["scene"].get("robot"):
                 d.qpos[:] = self.job["scene"]["robot"]["qpos"]
                 d.ctrl[:] = self.job["scene"]["robot"]["ctrl"]
+            for b, v, w in initial_velocities(self.job["scene"]):
+                # Free joint velocities: world-frame linear, body-frame angular.
+                joint = self.mj.mj_name2id(self.model, self.mj.mjtObj.mjOBJ_JOINT, f"joint_{b['id']}")
+                if self.model.jnt_type[joint] != self.mj.mjtJoint.mjJNT_FREE:
+                    raise ValueError("initial velocities require a free body")
+                adr = self.model.jnt_dofadr[joint]
+                d.qvel[adr:adr + 3] = v
+                d.qvel[adr + 3:adr + 6] = to_body_frame(b["rotation"], w)
             self.mj.mj_forward(self.model, d)
 
     def advance(self, steps):
@@ -267,11 +294,6 @@ class Newton:
             newton.eval_fk(
                 self.model, self.model.joint_q, self.model.joint_qd, self.state0
             )
-            self.initial_q = self.state0.body_q.numpy().copy()
-            self.initial_qd = self.state0.body_qd.numpy().copy()
-            self.initial_jq = self.state0.joint_q.numpy().copy()
-            self.initial_jqd = self.state0.joint_qd.numpy().copy()
-            self.control = self.model.control()
         names = self.model.body_label
         self.ids = []
         for env in range(job["worlds"]):
@@ -287,6 +309,24 @@ class Newton:
                     if len(matches) != 1:
                         raise ValueError(f"could not map Newton body {wanted}: {names}")
                     self.ids.append(matches[0])
+        with wp.ScopedDevice(self.device):
+            moving = initial_velocities(job["scene"])
+            if moving:
+                # Body twists are (COM velocity, angular velocity), both in world frame.
+                index = {b["id"]: k for k, b in enumerate(b for b in job["scene"]["bodies"] if b["dynamic"])}
+                per_world = len(index)
+                qd = self.state0.body_qd.numpy()
+                for env in range(job["worlds"]):
+                    for b, v, w in moving:
+                        qd[self.ids[env * per_world + index[b["id"]]]] = [*v, *w]
+                self.state0.body_qd.assign(qd)
+                newton.eval_ik(self.model, self.state0, self.state0.joint_q, self.state0.joint_qd)
+                newton.eval_fk(self.model, self.state0.joint_q, self.state0.joint_qd, self.state0)
+            self.initial_q = self.state0.body_q.numpy().copy()
+            self.initial_qd = self.state0.body_qd.numpy().copy()
+            self.initial_jq = self.state0.joint_q.numpy().copy()
+            self.initial_jqd = self.state0.joint_qd.numpy().copy()
+            self.control = self.model.control()
         self.settings = {
             "solver": "SolverMuJoCo",
             "use_mujoco_cpu": False,
@@ -367,7 +407,9 @@ class Genesis:
             rigid_options=gs.options.RigidOptions(use_hibernation=False, iterations=50,
                 **(dict(friction_cone=gs.friction_cone.elliptic,
                         enable_torsional_friction=True, enable_rolling_friction=True)
-                   if job["scene"].get("robot") else {})),
+                   if job["scene"].get("robot") else
+                   # The default (150 pairs) overflows on brick walls; resting bricks touch about four others.
+                   dict(max_collision_pairs=max(150, 4 * job["scene"]["size"])))),
             show_viewer=False,
             profiling_options=gs.options.ProfilingOptions(show_FPS=False),
         )
@@ -381,6 +423,18 @@ class Genesis:
             self.entity.set_qpos(np.tile(config["qpos"], (job["worlds"], 1)))
             self.robot_dofs = [self.entity.get_joint(n).dofs_idx_local[0] for n in config["joint_names"]]
             self.entity.control_dofs_position(np.tile(config["ctrl"], (job["worlds"], 1)), self.robot_dofs)
+        moving = initial_velocities(job["scene"])
+        if moving:
+            import numpy as np
+            dofs, velocity = [], []
+            for b, v, w in moving:
+                # Free joint DoFs: world-frame linear, body-frame angular.
+                joint = self.entity.get_joint(f"joint_{b['id']}")
+                if len(joint.dofs_idx_local) != 6:
+                    raise ValueError("initial velocities require a free body")
+                dofs += list(joint.dofs_idx_local)
+                velocity += [*v, *to_body_frame(b["rotation"], w)]
+            self.entity.set_dofs_velocity(np.tile(velocity, (job["worlds"], 1)), dofs)
         self.initial = self.scene.get_state()
         self.ids = [
             self.entity.get_link(job["scene"]["robot"]["body_names"][b["id"]-1] if job["scene"].get("robot") else f"body_{b['id']}").idx_local

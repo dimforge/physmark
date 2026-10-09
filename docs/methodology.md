@@ -75,6 +75,12 @@ The report renderer consumes a separate capture process; it uses common geometry
 Suite presets are intended starting points, not claims that every engine can finish every largest case. Timeouts and errors remain in the report, with their logs. No automatic backend fallback, accuracy downgrade, capacity reduction or engine substitution is used to manufacture a passing result.
 
 
+## Brick structures
+
+`brick_ring` and `pyramids` port the `brick_ring_110k` and `pyramids_500k` stress scenes from the Nexus `rbd-performance` branch (`crates/examples3d/stress_scenes`). Bricks are 1 × 0.5 × 0.5 m boxes of density 1 (0.25 kg) with friction 0.5. The ring is laid in running bond, 10 bricks deep at the bottom and tapering linearly to one at the top; a sphere of radius courses/5 and density 10 rolls into it. The pyramids are triangular walls 30 bricks wide at the base, 465 bricks each, on a 16:68 grid; two spheres of radius 30/7 and density 50 roll down two wall columns. Spheres start resting on the ground with 30 m/s linear velocity and the matching rolling angular velocity, which every adapter applies explicitly (MuJoCo, MJX and Genesis take free-joint angular velocity in the body frame; Newton derives joint velocities from world-frame body twists).
+
+Size counts dynamic bodies, spheres included, and is exact: 110,000 reproduces the ring (radius ≈ 80 m, 40 courses), and 505,922 reproduces the 16 × 68 pyramid field. Other sizes scale the ring's course count with the square root of the size and solve for the radius; pyramids add or remove walls, shrinking the base only below one wall. The last course or wall is partial. Compared with the source, the ground top is at z = 0 instead of 0.5, gravity is 9.81 instead of 10 m/s², and sleeping is disabled. Genesis's collision-pair budget is raised to four pairs per body (its default of 150 overflows on brick walls). The 110K–500K suites do not capture replays: one frame of 500K poses is about 70 MB of JSON.
+
 ## MPM workloads
 
 MPM is separate from rigid-body scoring. Only Nexus, Genesis and Newton participate; each trial has exactly one environment. A suite may declare `baseline = "genesis"`; rigid suites retain native MuJoCo as the default. Unsupported engines are filtered before the MPM suite is recorded. Missing or failed baseline cases withhold the overall score. No kernel-only measurements enter that score.

@@ -7,6 +7,7 @@ use std::f64::consts::PI;
 
 pub mod memory;
 pub mod mpm;
+pub mod stacks;
 
 pub const SCENARIOS: &[&str] = &[
     "free_fall",
@@ -14,6 +15,8 @@ pub const SCENARIOS: &[&str] = &[
     "sphere_pile",
     "mixed_pile",
     "stacks",
+    "brick_ring",
+    "pyramids",
     "dominoes",
     "pendulums",
     "friction_ramp",
@@ -34,6 +37,9 @@ pub struct Body {
     pub position: [f64; 3],
     pub rotation: [f64; 4],
     pub velocity: [f64; 3],
+    /// Initial angular velocity in the world frame; omitted when zero.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub angular_velocity: [f64; 3],
     pub mass: f64,
     pub inertia: [f64; 3],
     pub friction: f64,
@@ -263,6 +269,8 @@ impl Job {
                 b.position
                     .iter()
                     .chain(&b.rotation)
+                    .chain(&b.velocity)
+                    .chain(&b.angular_velocity)
                     .chain(&b.size)
                     .chain(&b.inertia)
                     .all(|x| x.is_finite()),
@@ -276,6 +284,9 @@ impl Job {
         }
         Ok(())
     }
+}
+fn is_zero(v: &[f64; 3]) -> bool {
+    v.iter().all(|x| *x == 0.)
 }
 pub fn hash<T: Serialize>(value: &T) -> String {
     format!("{:x}", Sha256::digest(serde_json::to_vec(value).unwrap()))
@@ -324,6 +335,7 @@ fn make_body(id: usize, dynamic: bool, shape: &str, size: [f64; 3], position: [f
         position,
         rotation: [0., 0., 0., 1.],
         velocity: [0.; 3],
+        angular_velocity: [0.; 3],
         mass,
         inertia,
         friction: 0.5,
@@ -341,6 +353,9 @@ pub fn scene(name: &str, size: usize, seed: u64, dt: f64) -> Result<Scene> {
     );
     if name.starts_with("mpm_") {
         return mpm::scene(name, size, seed, dt);
+    }
+    if stacks::SCENARIOS.contains(&name) {
+        return stacks::scene(name, size, seed, dt);
     }
     let mut out = Scene {
         schema_version: 1,
@@ -601,7 +616,7 @@ mod tests {
     #[test]
     fn scenes_reproduce_and_validate() {
         for n in SCENARIOS {
-            if n.starts_with("mpm_") || *n == "robot_go1" {
+            if n.starts_with("mpm_") || *n == "robot_go1" || stacks::SCENARIOS.contains(n) {
                 continue;
             }
             let s = scene(n, 19, 42, 1. / 120.).unwrap();

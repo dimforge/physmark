@@ -1,0 +1,13 @@
+name = "Brick structures — smoke"
+engines = ["rapier", "nexus", "genesis", "newton", "mujoco", "mjx"]
+scenarios = ["brick_ring", "pyramids"]
+sizes = [128]
+worlds = [1, 4]
+steps = 120
+warmup = 120
+repeats = 1
+seeds = [42]
+dt = 0.008333333333333333
+capture = true
+capture_stride = 4
+timeout_seconds = 600

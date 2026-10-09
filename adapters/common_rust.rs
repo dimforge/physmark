@@ -28,6 +28,7 @@ fn build_world(scene: &Scene) -> anyhow::Result<(PhysicsWorld, Vec<RigidBodyHand
                 ),
             ))
             .linvel(vector(b.velocity))
+            .angvel(vector(b.angular_velocity))
             .can_sleep(false)
             .linear_damping(0.)
             .angular_damping(0.);
