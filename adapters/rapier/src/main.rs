@@ -15,9 +15,9 @@ fn main() -> Result<()> {
     let make = || {
         (0..job.worlds)
             .map(|_| build_world(&job.scene))
-            .collect::<Vec<_>>()
+            .collect::<Result<Vec<_>>>()
     };
-    let mut worlds = make();
+    let mut worlds = make()?;
     let setup = start.elapsed().as_secs_f64();
     if let Some(memory) = &memory {
         memory.sample("setup");
@@ -32,7 +32,7 @@ fn main() -> Result<()> {
     if let Some(memory) = &memory {
         memory.sample("warmup");
     }
-    worlds = make();
+    worlds = make()?;
     if let Some(memory) = &memory {
         memory.sample("reset");
     }
@@ -79,10 +79,10 @@ fn main() -> Result<()> {
                 .count()
         })
         .sum();
-    let result = AdapterResult {
+    let mut result = AdapterResult {
         schema_version: 1,
-        engine: job.engine,
-        backend: job.backend,
+        engine: job.engine.clone(),
+        backend: job.backend.clone(),
         setup_seconds: setup,
         warmup_seconds: warmup,
         elapsed_seconds: elapsed,
@@ -93,6 +93,9 @@ fn main() -> Result<()> {
         gpu_timing: None,
         memory,
     };
+    if let Some(robot) = &job.scene.robot {
+        result.settings["robot"] = serde_json::json!({"model":robot.model,"source_commit":robot.source_commit,"initial_keyframe":robot.initial_keyframe,"target_keyframe":robot.target_keyframe,"ctrl":robot.ctrl,"self_contacts":false});
+    }
     std::fs::write(path, serde_json::to_vec_pretty(&result)?)?;
     Ok(())
 }

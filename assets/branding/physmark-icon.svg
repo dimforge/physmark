@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" role="img" aria-labelledby="title">
+<title id="title">PhysMark</title>
+<rect width="64" height="64" rx="10" fill="#0d141b"/>
+<path d="M32 9 49 18 32 27 15 18Z" fill="#7ce8d6"/>
+<path d="M15 18 32 27 32 46 15 37Z" fill="#41dcc3"/>
+<path d="M32 27 49 18 49 37 32 46Z" fill="#239b91"/>
+<path d="M12 47H15V54H49V47H52V57H12Z" fill="#41dcc3"/>
+</svg>

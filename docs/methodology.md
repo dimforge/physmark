@@ -70,6 +70,85 @@ Counter references: [Apple Metal allocation counter](https://developer.apple.com
 
 Record full source pins, Python/Rust locks, adapter build fingerprint, scene/job hashes, harness revision/dirty status, machine/OS/GPU description, settings and raw samples. The harness fingerprint includes uncommitted source content; publish results only with the corresponding source revision and lockfiles. Timings are hardware-, OS-, power-, temperature- and driver-dependent. Running unrelated heavy work affects them. Thread limits are requested through Rayon and common runtime environment variables; those are not a promise of identical framework worker counts.
 
-The report renderer consumes a separate capture process; it uses common geometry, camera rules, colours and video timing for all engines. It never calls an engine renderer. Capture files store only world 0 to bound output size. Rendering costs are excluded and renderer failures remain visible in `render-status.json`.
+The report renderer consumes a separate capture process; it uses common geometry, camera rules, colours and video timing for all engines. It never calls an engine renderer. Capture files store only world 0 to bound output size. Rendering costs are excluded and renderer failures remain visible in `render-status.json`. Captures above 2,000 bodies use the pinned VTK dependency for instanced, depth-buffered offscreen rendering of every body; smaller captures use Matplotlib. Both paths use the same canonical primitive meshes, engine colors, camera direction and simulated-time playback. The renderer and rendered body count are recorded with large-scene media. Report rendering runs after the physics trials, so GPU rendering work does not overlap timed CPU trials.
 
 Suite presets are intended starting points, not claims that every engine can finish every largest case. Timeouts and errors remain in the report, with their logs. No automatic backend fallback, accuracy downgrade, capacity reduction or engine substitution is used to manufacture a passing result.
+
+
+## MPM workloads
+
+MPM is separate from rigid-body scoring. Only Nexus, Genesis and Newton participate; each trial has exactly one environment. A suite may declare `baseline = "genesis"`; rigid suites retain native MuJoCo as the default. Unsupported engines are filtered before the MPM suite is recorded. Missing or failed baseline cases withhold the overall score. No kernel-only measurements enter that score.
+
+The shared scene contains an `mpm` block. Its dynamic `bodies` entries represent material points: position, velocity, mass and a sphere radius used only for common-renderer visualization and particle volume. They are never instantiated as rigid colliders. Captures reuse the pose transport with identity quaternions as padding; they do not represent material deformation tensors. Every point is rendered. Static box entries define the same floor and four tank walls in every adapter.
+
+The three workloads are an elastic cube drop, a granular column collapse and a fluid dam break. All contain 0.064 cubic metres at 1,000 kg/m³ (64 kg total). Size must be an even cube; particle spacing is 0.4 divided by its cube root, with two points per grid-cell edge. Scaling refines a fixed physical scene instead of enlarging the material. Domain padding keeps Genesis's internal numerical boundary outside the common colliders. Nexus and Newton use dynamic sparse grids where supported; Genesis uses a bounded grid. Allocation strategy remains an engine difference and is disclosed.
+
+Every adapter receives the same frame timestep and 20 substeps. The presets use 1/240 s frames; a conservative shared acoustic CFL check rejects unsuitable combinations. The common elastic parameters are Young's modulus 10 kPa and Poisson ratio 0.2. Sand uses a 30-degree friction angle and zero cohesion/hardening. Liquid has zero viscosity and a 10 kPa initial pressure tangent: Nexus uses a Tait law (gamma 7, coefficient K/7), Genesis uses its lambda J(J-1) law with lambda=K, and Newton uses its implicit yield-surface rheology with bulk modulus K. These are initial-parameter comparisons, not identical constitutive laws. Nexus/Genesis elasticity is Neo-Hookean; Newton's implicit elasticity differs. Report settings preserve each actual material/solver configuration.
+
+Genesis reserves exactly N points, then explicitly sets all positions, velocities and activation flags before saving its reset state. Nexus rebuilds the canonical particle state after warmup. Newton rebuilds solver state after warmup, outside timing, to clear internal history. Setup, JIT, reset, final readback, validation and rendering are excluded from stepping. Per-frame transfers, solver work and Newton's native collision projection are included. Profiling and memory collection use the same independent-replay design as rigid trials. Genesis/Metal device timestamps remain unavailable; Nexus uses native GPU timestamps, and Newton/CUDA uses Warp device activities when available.
+
+MPM validation checks particle count, activation count, finite positions, normalized transport quaternions, domain escape, and floor penetration no larger than one grid cell. These are broad failure gates; they do not quantify volume conservation, stress accuracy, convergence, or material fidelity. All particles stay active, with no sleeping or adaptive particle removal. Dense Newton/CPU is useful for integration checks but is excluded from the requested Mac GPU benchmark round.
+
+Implementation references are the pinned [Nexus MPM pipeline](https://github.com/dimforge/nexus/blob/1cfbd768db6ac770f302a7f432a43df42953eb67/src_mpm/pipeline.rs), [Genesis MPM materials](https://github.com/Genesis-Embodied-AI/Genesis/tree/02908fe6474d8b073b662347a8794614fa250658/genesis/engine/materials/MPM), and [Newton implicit MPM solver](https://github.com/newton-physics/newton/blob/dd2dace79fd47dd6c198f4a7a2f894c2aa47dcc4/newton/_src/solvers/implicit_mpm/solver_implicit_mpm.py).
+
+### Menagerie Go1 robotics
+
+`robot_go1` imports the Unitree Go1 from the `menagerie` commit in `engines.lock`.
+Every environment contains one free-floating, 13-link robot with 12 position
+actuators. The benchmark starts from a crouch (hip 1.2 rad, knee -2.4 rad) with
+feet 3 mm above the ground, and continuously holds the original MJCF `home`
+keyframe's actuator targets (0, 0.9, -1.8 rad per leg). The two-second rollout
+includes the rise and subsequent standing motion; it is not a locomotion policy.
+
+`tools/robot_scene.py` retains the source's inertias, joint parameters, collision
+primitives and actuator limits. It removes visual meshes, adds the ground, and
+excludes self-contacts consistently across engines. Rendered links use the
+original collision primitives, with poses at MJCF link origins. The source model
+and resulting portable MJCF are recorded in each job. Rapier and Nexus use the
+pinned Rapier MJCF loader and reduced-coordinate multibody joints; MuJoCo and
+Genesis use their native MJCF loaders. The current Nexus robotics preset uses four
+substeps and four internal PGS iterations per substep, explicit Coriolis forces, and
+`friction_in_bias_pass = false`. Both `substep_refresh` and
+`substep_refresh_light` are false. It reserves 64 collision pairs and 32
+multibody contact-constraint slots per environment, with automatic growth
+enabled. Each contact point consumes one normal and two friction slots.
+Robot results record the applied settings, requested capacities, final total
+capacities and the latest asynchronous demand counters. The latter are not
+peak measurements. Untimed capture replays also read actual GPU demand after
+each step into `capacity-samples.json` and reject capacity overflow. Neither
+the timing nor the memory replay performs those extra diagnostic readbacks.
+Earlier presets are preserved in the report archives. The original
+two-substep/eight-PGS run also enabled light refresh and biased-pass friction.
+The new two-substep/eight-PGS and four-substep/four-PGS comparison keeps both
+disabled. These settings apply only to the Go1
+stand-up workload. The local Nexus optimization branch parallelizes contact-segment
+allocation and selects 32-thread constraint workgroups when all multibodies have
+at most 32 DOFs. Its fixed-settings optimization comparison used one substep and
+four PGS iterations on both sides and is retained separately. The new iteration
+comparison uses the same optimized engine for all configurations.
+Its unpublished commit is pinned in `engines.lock`; the recorded Git bundle and
+Nexus workspace lockfile reproduce the local engine build without a push.
+Solver/contact approximations differ;
+these are comparable workloads, not claims of identical dynamics.
+
+Scene size is **robots per environment** (currently one); `worlds` sweeps independent
+robots up to 4,096. Each environment must finish upright, with base height between
+0.22 and 0.50 m and horizontal drift below 1 m after at least one simulated second.
+All 13 links must remain present and awake. Failing robots are excluded from timing
+rankings. The initial positions are checked against MuJoCo forward kinematics.
+Sleeping remains disabled in every engine.
+
+### Full Mac round resource policy
+
+`tools/full_mac.py` runs all parts serially, with Rapier parallelism enabled and
+8 workers requested. MPM runs only on Nexus/Genesis Metal; Newton/MJX are omitted
+from this round. CPU subprocesses are limited to 120 seconds including setup,
+warmup and rollout; GPU budgets are declared in each preset. A 72 GiB physical
+footprint cap limits each adapter. `skip_after_resource_limit` records subsequent
+identical/larger environment batches as skipped after a timeout or memory-cap
+error. Accuracy-gate failures remain distinct from resource failures.
+
+Liquid MPM boundary friction is 0.01, the minimum accepted by Genesis's rigid
+boundary material, and is shared by all MPM adapters. Liquid viscosity remains zero.
+
+Newton MPM uses the Q1 velocity, P0 strain and particle collider basis combination from its reference dam-break example. The initial B2/default-strain combination produced non-finite sand/liquid states in CPU probes and is not used.

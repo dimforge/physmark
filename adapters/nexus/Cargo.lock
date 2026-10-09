@@ -973,6 +973,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "mjcf-rs"
+version = "0.36.0"
+dependencies = [
+ "glamx",
+ "log",
+ "roxmltree",
+ "thiserror",
+]
+
+[[package]]
 name = "naga"
 version = "30.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1125,6 +1135,7 @@ dependencies = [
  "khal-std",
  "parry3d",
  "rapier3d",
+ "spirv-std",
  "unroll",
  "vortx-shaders",
 ]
@@ -1418,6 +1429,7 @@ dependencies = [
  "nexus3d",
  "physmark-core",
  "pollster",
+ "rapier3d-mjcf",
  "serde_json",
 ]
 
@@ -1545,8 +1557,6 @@ checksum = "ca45419789ae5a7899559e9512e58ca889e41f04f1f2445e9f4b290ceccd1d08"
 [[package]]
 name = "rapier3d"
 version = "0.36.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c2e2b20538584bb3ba5bfe6a66c2d9a242ee17d15e5398be0fa35279c7d73739"
 dependencies = [
  "approx",
  "arrayvec",
@@ -1563,6 +1573,17 @@ dependencies = [
  "static_assertions",
  "thiserror",
  "wide",
+]
+
+[[package]]
+name = "rapier3d-mjcf"
+version = "0.36.0"
+dependencies = [
+ "anyhow",
+ "bitflags",
+ "log",
+ "mjcf-rs",
+ "rapier3d",
 ]
 
 [[package]]
@@ -1638,6 +1659,12 @@ name = "robust"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4e27ee8bb91ca0adcf0ecb116293afa12d393f9c2b9b9cd54d33e8078fe19839"
+
+[[package]]
+name = "roxmltree"
+version = "0.20.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6c20b6793b5c2fa6553b250154b78d6d0db37e72700ae35fad9387a46f487c97"
 
 [[package]]
 name = "rstar"

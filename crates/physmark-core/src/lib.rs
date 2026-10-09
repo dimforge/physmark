@@ -1,11 +1,12 @@
 //! Versioned, engine-neutral scene and subprocess protocol. Coordinates are metres, kilograms,
-//! seconds, Z-up; quaternions are XYZW and body origins coincide with centres of mass.
+//! seconds, Z-up; quaternions are XYZW. Imported robot poses use MJCF link origins.
 use anyhow::{Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::f64::consts::PI;
 
 pub mod memory;
+pub mod mpm;
 
 pub const SCENARIOS: &[&str] = &[
     "free_fall",
@@ -16,6 +17,10 @@ pub const SCENARIOS: &[&str] = &[
     "dominoes",
     "pendulums",
     "friction_ramp",
+    "mpm_elastic_drop",
+    "mpm_sand_collapse",
+    "mpm_dam_break",
+    "robot_go1",
 ];
 pub const ENGINES: &[&str] = &["rapier", "nexus", "genesis", "newton", "mujoco", "mjx"];
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -43,6 +48,24 @@ pub struct Hinge {
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct RobotConfig {
+    pub model: String,
+    pub source_commit: String,
+    pub source_path: String,
+    pub xml: String,
+    pub initial_keyframe: String,
+    pub target_keyframe: String,
+    pub qpos: Vec<f64>,
+    pub ctrl: Vec<f64>,
+    pub joint_names: Vec<String>,
+    pub body_names: Vec<String>,
+    pub render_parts: Vec<Vec<serde_json::Value>>,
+    pub initial_height: f64,
+    pub minimum_standing_height: f64,
+    pub self_contacts: bool,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Scene {
     pub schema_version: u32,
     pub scenario: String,
@@ -52,6 +75,11 @@ pub struct Scene {
     pub dt: f64,
     pub bodies: Vec<Body>,
     pub hinges: Vec<Hinge>,
+    /// With MPM, dynamic body records are material points; sphere geometry is for rendering only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mpm: Option<mpm::MpmConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub robot: Option<RobotConfig>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -164,6 +192,52 @@ impl Job {
             "unsupported protocol version"
         );
         ensure!(ENGINES.contains(&self.engine.as_str()), "unknown engine");
+        if let Some(robot) = &self.scene.robot {
+            ensure!(
+                ["rapier", "nexus", "genesis", "mujoco"].contains(&self.engine.as_str()),
+                "robot MJCF adapter is not implemented for this engine"
+            );
+            ensure!(
+                self.scene.scenario == "robot_go1" && self.scene.mpm.is_none(),
+                "invalid robot scenario"
+            );
+            ensure!(
+                robot.body_names.len() == self.scene.size
+                    && robot.render_parts.len() == self.scene.size,
+                "robot link count mismatch"
+            );
+            ensure!(
+                robot.ctrl.len() == robot.joint_names.len()
+                    && robot.ctrl.len() == 12
+                    && robot.qpos.len() == 19,
+                "robot actuator/keyframe mismatch"
+            );
+            ensure!(
+                !robot.self_contacts && robot.qpos.iter().chain(&robot.ctrl).all(|x| x.is_finite()),
+                "invalid robot configuration"
+            );
+        } else {
+            ensure!(
+                self.scene.scenario != "robot_go1",
+                "missing robot configuration"
+            );
+        }
+        if let Some(mpm) = &self.scene.mpm {
+            ensure!(
+                mpm::ENGINES.contains(&self.engine.as_str()),
+                "engine has no MPM adapter"
+            );
+            ensure!(
+                self.worlds == 1,
+                "MPM benchmarks require exactly one environment"
+            );
+            mpm.validate(&self.scene)?;
+        } else {
+            ensure!(
+                !self.scene.scenario.starts_with("mpm_"),
+                "missing MPM configuration"
+            );
+        }
         ensure!(
             self.worlds > 0 && self.steps > 0 && self.capture_stride > 0 && self.threads > 0,
             "counts must be positive"
@@ -261,6 +335,13 @@ pub fn scene(name: &str, size: usize, seed: u64, dt: f64) -> Result<Scene> {
         "scene size must be in 1..=1000000"
     );
     ensure!(SCENARIOS.contains(&name), "unknown scenario: {name}");
+    ensure!(
+        name != "robot_go1",
+        "robot_go1 requires the pinned MJCF asset loader"
+    );
+    if name.starts_with("mpm_") {
+        return mpm::scene(name, size, seed, dt);
+    }
     let mut out = Scene {
         schema_version: 1,
         scenario: name.into(),
@@ -270,6 +351,8 @@ pub fn scene(name: &str, size: usize, seed: u64, dt: f64) -> Result<Scene> {
         dt,
         bodies: vec![],
         hinges: vec![],
+        mpm: None,
+        robot: None,
     };
     let width = (size as f64).cbrt().ceil() as usize;
     if name != "free_fall" {
@@ -388,8 +471,10 @@ pub fn scene(name: &str, size: usize, seed: u64, dt: f64) -> Result<Scene> {
             .filter(|b| b.dynamic)
             .map(|b| b.position[1].abs() + b.size[1] + 10.)
             .fold(20., f64::max);
-        out.bodies[0].size[0] = x;
-        out.bodies[0].size[1] = y;
+        // Preserve the scale-based floor margin: large piles spread far beyond
+        // their initial footprint. Only expand for elongated layouts, never shrink.
+        out.bodies[0].size[0] = out.bodies[0].size[0].max(x);
+        out.bodies[0].size[1] = out.bodies[0].size[1].max(y);
     }
     Ok(out)
 }
@@ -438,6 +523,26 @@ pub fn validate_result(job: &Job, r: &AdapterResult) -> Validation {
                 + (p[2] - expected).powi(2))
             .sqrt();
             v.max_free_fall_error = Some(v.max_free_fall_error.unwrap_or(0.).max(e));
+        } else if let Some(mpm) = &job.scene.mpm {
+            v.max_floor_penetration = v.max_floor_penetration.max((-p[2]).max(0.));
+            if (0..3).any(|k| p[k] < mpm.domain_lower[k] || p[k] > mpm.domain_upper[k]) {
+                v.reasons
+                    .push("MPM particle escaped the benchmark domain".into());
+            }
+        } else if let Some(robot) = &job.scene.robot {
+            // Link origins, not centres of mass or proxy boxes. Check each base:
+            // after one second it must have risen, be upright and remain nearby.
+            if i % bodies.len() == 0
+                && job.steps as f64 * job.scene.dt >= 1.0
+                && (p[2] < robot.minimum_standing_height
+                    || p[2] > 0.5
+                    || rotate(q, [0., 0., 1.])[2] < 0.8
+                    || p[0].hypot(p[1]) > 1.0)
+            {
+                v.reasons
+                    .push("robot failed standing-height/upright/base-drift gate".into());
+            }
+            v.max_floor_penetration = v.max_floor_penetration.max((-p[2]).max(0.));
         } else {
             let extent = match b.shape.as_str() {
                 "sphere" => b.size[0],
@@ -461,9 +566,11 @@ pub fn validate_result(job: &Job, r: &AdapterResult) -> Validation {
             v.max_joint_error = Some(v.max_joint_error.unwrap_or(0.).max(e));
         }
     }
-    if v.max_floor_penetration > 0.15 {
-        v.reasons
-            .push("floor penetration exceeds 0.15 m baseline gate".into());
+    let floor_tolerance = job.scene.mpm.as_ref().map_or(0.15, |m| m.cell_width);
+    if v.max_floor_penetration > floor_tolerance {
+        v.reasons.push(format!(
+            "floor penetration exceeds {floor_tolerance} m baseline gate"
+        ));
     }
     if v.max_joint_error.is_some_and(|x| x > 0.08) {
         v.reasons
@@ -494,9 +601,32 @@ mod tests {
     #[test]
     fn scenes_reproduce_and_validate() {
         for n in SCENARIOS {
+            if n.starts_with("mpm_") || *n == "robot_go1" {
+                continue;
+            }
             let s = scene(n, 19, 42, 1. / 120.).unwrap();
             assert_eq!(hash(&s), hash(&scene(n, 19, 42, 1. / 120.).unwrap()));
             assert_eq!(s.bodies.iter().filter(|b| b.dynamic).count(), 19);
+        }
+    }
+    #[test]
+    fn ground_keeps_scale_margin_and_covers_elongated_layouts() {
+        for scenario in [
+            "box_pile",
+            "sphere_pile",
+            "mixed_pile",
+            "stacks",
+            "dominoes",
+            "pendulums",
+        ] {
+            let s = scene(scenario, 10_000, 42, 1. / 120.).unwrap();
+            let ground = &s.bodies[0];
+            assert!(!ground.dynamic);
+            assert!(ground.size[0] >= 200. && ground.size[1] >= 200.);
+            for body in s.bodies.iter().filter(|b| b.dynamic) {
+                assert!(body.position[0].abs() + body.size[0] + 10. <= ground.size[0]);
+                assert!(body.position[1].abs() + body.size[1] + 10. <= ground.size[1]);
+            }
         }
     }
     #[test]

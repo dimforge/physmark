@@ -104,6 +104,12 @@ struct Suite {
     capture: bool,
     capture_stride: usize,
     timeout_seconds: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cpu_timeout_seconds: Option<u64>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    skip_after_resource_limit: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    baseline: Option<String>,
 }
 fn command_output(root: &Path, program: &str, args: &[&str]) -> String {
     Command::new(program)
@@ -157,6 +163,28 @@ fn fetch(root: &Path) -> Result<()> {
         if !dir.join(".git").exists() {
             checked(&dir, "git", &["init", "-q"])?;
             checked(&dir, "git", &["remote", "add", "origin", &url])?;
+            if name == "menagerie" {
+                // Only the portable Go1 collision model and its license are needed.
+                checked(&dir, "git", &["config", "remote.origin.promisor", "true"])?;
+                checked(
+                    &dir,
+                    "git",
+                    &["config", "remote.origin.partialclonefilter", "blob:none"],
+                )?;
+                checked(&dir, "git", &["sparse-checkout", "init", "--no-cone"])?;
+                checked(
+                    &dir,
+                    "git",
+                    &[
+                        "sparse-checkout",
+                        "set",
+                        "--no-cone",
+                        "/unitree_go1/go1.xml",
+                        "/unitree_go1/LICENSE",
+                        "/README.md",
+                    ],
+                )?;
+            }
         }
         ensure!(
             command_output(&dir, "git", &["remote", "get-url", "origin"]) == url,
@@ -167,7 +195,22 @@ fn fetch(root: &Path) -> Result<()> {
             "source {name} has tracked modifications"
         );
         if command_output(&dir, "git", &["rev-parse", "HEAD"]) != rev {
-            checked(&dir, "git", &["fetch", "--depth", "1", "origin", &rev])?;
+            if name == "menagerie" {
+                checked(
+                    &dir,
+                    "git",
+                    &[
+                        "fetch",
+                        "--filter=blob:none",
+                        "--depth",
+                        "1",
+                        "origin",
+                        &rev,
+                    ],
+                )?;
+            } else {
+                checked(&dir, "git", &["fetch", "--depth", "1", "origin", &rev])?;
+            }
             checked(&dir, "git", &["checkout", "--detach", &rev])?;
         }
         println!("{name} {rev}");
@@ -225,6 +268,34 @@ fn stamp(root: &Path) -> Result<String> {
 }
 fn python(root: &Path) -> PathBuf {
     root.join(".physmark/envs/python/bin/python")
+}
+fn load_scene(
+    root: &Path,
+    name: &str,
+    size: usize,
+    seed: u64,
+    dt: f64,
+) -> Result<physmark_core::Scene> {
+    if name != "robot_go1" {
+        return scene(name, size, seed, dt);
+    }
+    let output = Command::new(python(root))
+        .arg(root.join("tools/robot_scene.py"))
+        .arg("--root")
+        .arg(root)
+        .arg("--size")
+        .arg(size.to_string())
+        .arg("--seed")
+        .arg(seed.to_string())
+        .arg("--dt")
+        .arg(dt.to_string())
+        .output()?;
+    ensure!(
+        output.status.success(),
+        "robot scene import failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok(serde_json::from_slice(&output.stdout)?)
 }
 fn adapter_command(root: &Path, engine: &str) -> Command {
     if ["rapier", "nexus"].contains(&engine) {
@@ -408,13 +479,30 @@ fn parse_skip_cases(specs: &[String]) -> Result<BTreeMap<String, String>> {
 }
 fn run(
     root: &Path,
-    suite: Suite,
+    mut suite: Suite,
     threads: usize,
     backends: Vec<String>,
     out: Option<PathBuf>,
     resume: bool,
     skip_cases: Vec<String>,
 ) -> Result<()> {
+    if suite.scenarios.iter().any(|s| s.starts_with("mpm_")) {
+        ensure!(
+            suite.scenarios.iter().all(|s| s.starts_with("mpm_")),
+            "run MPM and rigid-body benchmarks in separate suites"
+        );
+        ensure!(
+            suite.worlds == [1],
+            "MPM benchmarks require exactly one environment"
+        );
+        suite
+            .engines
+            .retain(|engine| physmark_core::mpm::ENGINES.contains(&engine.as_str()));
+        ensure!(!suite.engines.is_empty(), "no selected engine supports MPM");
+        if suite.baseline.is_none() {
+            suite.baseline = Some("genesis".into());
+        }
+    }
     let skip_cases = parse_skip_cases(&skip_cases)?;
     verify_sources(root)?;
     ensure!(
@@ -434,6 +522,7 @@ fn run(
             && suite.steps > 0
             && suite.capture_stride > 0
             && suite.timeout_seconds > 0
+            && suite.cpu_timeout_seconds.is_none_or(|v| v > 0)
             && threads > 0,
         "counts must be positive"
     );
@@ -536,7 +625,21 @@ fn run(
             continue;
         }
         let case = format!("{engine}:{scenario}:{size}:{worlds}");
-        let skip = skip_cases.get(&case);
+        let automatic_skip = if suite.skip_after_resource_limit {
+            records.iter().find(|r| r["engine"] == engine && r["scenario"] == scenario
+                && r["size"] == size && r["worlds"].as_u64().is_some_and(|n| n <= worlds as u64)
+                && r["status"] == "error" && r["error"].as_str().is_some_and(|e|
+                    e.contains("adapter timed out") || e.contains("adapter memory limit exceeded")))
+                .map(|r| format!("resource policy: {} reached its limit; remaining identical/larger environment batches skipped", r["id"]))
+        } else {
+            None
+        };
+        let skip = skip_cases.get(&case).or(automatic_skip.as_ref());
+        let trial_timeout = if backend_map[&engine] == "cpu" {
+            suite.cpu_timeout_seconds.unwrap_or(suite.timeout_seconds)
+        } else {
+            suite.timeout_seconds
+        };
         let dir = out.join("runs").join(&id);
         if dir.exists() && skip.is_none() {
             let archive = out.join("interrupted");
@@ -546,7 +649,7 @@ fn run(
         fs::create_dir_all(&dir)?;
         let job = Job {
             schema_version: 1,
-            scene: scene(&scenario, size, seed, suite.dt)?,
+            scene: load_scene(root, &scenario, size, seed, suite.dt)?,
             engine: engine.clone(),
             backend: backend_map[&engine].clone(),
             mode: "timing".into(),
@@ -585,7 +688,7 @@ fn run(
                 &dir.join("job.json"),
                 &dir.join("result.json"),
                 &dir.join("adapter.log"),
-                suite.timeout_seconds,
+                trial_timeout,
                 threads,
             )?;
             Ok(serde_json::from_slice(&fs::read(dir.join("result.json"))?)?)
@@ -624,7 +727,7 @@ fn run(
                     &dir.join("gpu-job.json"),
                     &dir.join("gpu-result.json"),
                     &dir.join("gpu.log"),
-                    suite.timeout_seconds,
+                    trial_timeout,
                     threads,
                 )?;
                 let r: AdapterResult =
@@ -676,7 +779,7 @@ fn run(
                     &dir.join("memory-job.json"),
                     &dir.join("memory-result.json"),
                     &dir.join("memory.log"),
-                    suite.timeout_seconds,
+                    trial_timeout,
                     threads,
                 )?;
                 let result: AdapterResult =
@@ -715,7 +818,7 @@ fn run(
                 &dir.join("capture-job.json"),
                 &dir.join("capture.json"),
                 &dir.join("capture.log"),
-                suite.timeout_seconds,
+                trial_timeout,
                 threads,
             ) {
                 Ok(()) => {
@@ -862,7 +965,7 @@ fn main() -> Result<()> {
             seed,
             dt,
             output,
-        } => atomic_json(&output, &scene(&scenario, size, seed, dt)?),
+        } => atomic_json(&output, &load_scene(&root, &scenario, size, seed, dt)?),
         Action::Run {
             suite,
             engines,

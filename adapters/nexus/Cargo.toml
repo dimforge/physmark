@@ -10,13 +10,15 @@ webgpu = ["nexus3d/webgpu", "khal/webgpu"]
 cpu = ["nexus3d/cpu", "khal/cpu"]
 cuda = ["nexus3d/cuda", "khal/cuda"]
 [dependencies]
+rapier3d-mjcf = { path = "../../.physmark/sources/rapier/crates/rapier3d-mjcf" }
 physmark-core = { path = "../../crates/physmark-core" }
-nexus3d = { path = "../../.physmark/sources/nexus/crates/nexus3d", default-features = false, features = ["dim3", "f32", "rbd"] }
+nexus3d = { path = "../../.physmark/sources/nexus/crates/nexus3d", default-features = false, features = ["dim3", "f32", "rbd", "mpm"] }
 khal = "0.3"
 anyhow = "1"
 serde_json = "1"
 pollster = "0.4"
 [patch.crates-io]
+rapier3d = { path = "../../.physmark/sources/rapier/crates/rapier3d" }
 khal = { git = "https://github.com/dimforge/khal", rev = "58b02f2379f3542dbf5269804c3f2dfcdfc4e0b4" }
 khal-derive = { git = "https://github.com/dimforge/khal", rev = "58b02f2379f3542dbf5269804c3f2dfcdfc4e0b4" }
 khal-std = { git = "https://github.com/dimforge/khal", rev = "58b02f2379f3542dbf5269804c3f2dfcdfc4e0b4" }

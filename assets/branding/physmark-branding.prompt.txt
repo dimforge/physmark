@@ -1,0 +1,17 @@
+Tool: built-in image_gen.
+Accepted source: physmark-logo-concept-v1.png (the version without glow).
+
+Final logo edit prompt:
+Make ONE tiny change to this approved logo image: add a small solid mint (#41dcc3) round typographic period immediately after the final letter k. The wordmark must read "physmark." The dot sits on the same baseline as the bottom of the k, with a natural punctuation gap, and a diameter about 18% of the lowercase letter height.
+Preserve EVERYTHING else exactly: all existing letter shapes and spacing, the symbol on the left, all colors, the solid dark navy background, the flat clean treatment, the layout and canvas. The letters must remain smooth, crisp, legible and solid. No glow. No transparency or background removal. Do not reimagine or redraw the typography. Simply add the small mint period to this exact design.
+
+Icon reference prompt:
+Create the favicon / application icon variant of this approved PhysMark logo, using ONLY the existing cube above its small measurement bracket. Remove all lettering. Preserve the icon design, colors, cube proportions, bracket proportions and the gap between cube and bracket exactly. No dot is needed in the icon-only version.
+A square canvas, uniform opaque deep navy background #0d141b. Center the complete cube-and-bracket emblem both horizontally and vertically, with about 12% clear margin on each side. Make the emblem large and legible at 16 to 32 pixels. Crisp flat geometric edges, simple solid mint/teal faces, no glow, shadows, additional borders or decoration. No rounded square drawn inside the image, no text, no transparency. This is a production favicon, not a presentation mockup.
+
+Production assets:
+- physmark-logo.png: accepted logo plus mint period, unchanged generated pixels.
+- physmark-logo.svg: self-contained display crop around that PNG; preserves the exact approved lettering. It embeds raster artwork and is not a fully vector wordmark.
+- physmark-icon.svg: simple vector cube-and-bracket favicon for small sizes.
+- physmark-icon.png: generated icon reference.
+- favicon-32.png and apple-touch-icon.png: deterministic 32 px and 180 px exports of the native SVG icon using rsvg-convert.

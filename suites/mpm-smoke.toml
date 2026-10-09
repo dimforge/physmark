@@ -1,0 +1,14 @@
+name = "mpm-smoke"
+engines = ["nexus", "genesis", "newton"]
+scenarios = ["mpm_elastic_drop", "mpm_sand_collapse", "mpm_dam_break"]
+sizes = [512]
+worlds = [1]
+steps = 64
+warmup = 64
+repeats = 1
+seeds = [42]
+dt = 0.004166666666666667
+capture = true
+capture_stride = 4
+timeout_seconds = 900
+baseline = "genesis"

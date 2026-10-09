@@ -1,0 +1,15 @@
+name = "Full Mac rigid-body suite"
+engines = ["rapier", "mujoco", "nexus", "genesis"]
+scenarios = ["free_fall", "box_pile", "sphere_pile", "mixed_pile", "stacks", "dominoes", "pendulums", "friction_ramp"]
+sizes = [8, 128, 1024, 10000]
+worlds = [1]
+steps = 600
+warmup = 600
+repeats = 3
+seeds = [42]
+dt = 0.008333333333333333
+capture = true
+capture_stride = 4
+timeout_seconds = 900
+cpu_timeout_seconds = 120
+skip_after_resource_limit = true

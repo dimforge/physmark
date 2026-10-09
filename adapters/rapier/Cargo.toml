@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 [workspace]
 [dependencies]
+rapier3d-mjcf = { path = "../../.physmark/sources/rapier/crates/rapier3d-mjcf" }
 physmark-core = { path = "../../crates/physmark-core" }
 rapier3d = { path = "../../.physmark/sources/rapier/crates/rapier3d", features = ["parallel"] }
 anyhow = "1"

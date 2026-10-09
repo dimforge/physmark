@@ -7,7 +7,7 @@ adapter = "rust"
 
 [engines.nexus]
 repository = "https://github.com/dimforge/nexus.git"
-commit = "1cfbd768db6ac770f302a7f432a43df42953eb67"
+commit = "22688d610fc953f7af00078c6dcc53add561a996"
 adapter = "rust"
 
 [engines.genesis]
@@ -36,3 +36,7 @@ solver = "jax"
 [dependencies.mujoco-warp]
 repository = "https://github.com/google-deepmind/mujoco_warp.git"
 commit = "6058495b38d12c0db83fcaaea739c7200cffb43c"
+
+[dependencies.menagerie]
+repository = "https://github.com/google-deepmind/mujoco_menagerie.git"
+commit = "f054586a8e90465d49ee5be15335c4a0c7f57caf"

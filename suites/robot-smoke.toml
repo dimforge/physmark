@@ -1,0 +1,13 @@
+name = "Go1 stand-up — smoke"
+engines = ["rapier", "mujoco", "nexus", "genesis"]
+scenarios = ["robot_go1"]
+sizes = [1]
+worlds = [1, 4]
+steps = 480
+warmup = 480
+repeats = 1
+seeds = [42]
+dt = 0.004166666666666667
+capture = true
+capture_stride = 8
+timeout_seconds = 600

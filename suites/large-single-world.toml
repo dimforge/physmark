@@ -1,0 +1,13 @@
+name = "Large single-world scenes"
+engines = ["rapier"]
+scenarios = ["box_pile", "sphere_pile", "mixed_pile", "stacks"]
+sizes = [10000]
+worlds = [1]
+steps = 600
+warmup = 600
+repeats = 5
+seeds = [42]
+dt = 0.008333333333333333
+capture = true
+capture_stride = 4
+timeout_seconds = 1800

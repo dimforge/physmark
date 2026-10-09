@@ -6,21 +6,63 @@ use nexus3d::prelude::*;
 use physmark_core::memory::MemorySampler;
 use physmark_core::{AdapterResult, Frame, GpuTiming, Job, read_job};
 use std::time::Instant;
+mod mpm;
+
+// Go1 stand-up settings; other rigid scenes keep their existing defaults.
+const ROBOT_SUBSTEPS: u32 = 4;
+const ROBOT_PGS_ITERATIONS: u32 = 4;
+const ROBOT_REFRESH: bool = false;
+const ROBOT_REFRESH_LIGHT: bool = false;
+const ROBOT_FRICTION_IN_BIAS: bool = false;
+const ROBOT_COLLISION_CAPACITY: u32 = 64;
+const ROBOT_CONTACT_CAPACITY: u32 = 32;
+
+fn collision_capacity(job: &Job) -> u32 {
+    if job.scene.robot.is_some() {
+        ROBOT_COLLISION_CAPACITY
+    } else {
+        (job.scene.size * 32).max(128) as u32
+    }
+}
+
 async fn state(job: &Job, b: &GpuBackend) -> Result<(NexusState, Vec<Vec<RigidBodyHandle>>)> {
+    if job.scene.mpm.is_some() {
+        return Ok((mpm::state(job, b).await?, vec![]));
+    }
     let mut s = NexusState::default();
     let mut h = vec![];
     for e in 0..job.worlds {
         if e > 0 {
             s.add_environment();
         }
-        let (world, handles) = build_world(&job.scene);
+        let (world, handles) = build_world(&job.scene)?;
         *s.rbd_world_mut(e) = world;
+        if job.scene.robot.is_some() {
+            let params = nexus3d::rbd::shaders::dynamics::RbdSimParams {
+                num_internal_pgs_iterations: ROBOT_PGS_ITERATIONS,
+                friction_in_bias_pass: u32::from(ROBOT_FRICTION_IN_BIAS),
+                ..Default::default()
+            };
+            s.set_rbd_sim_params(e, params);
+        }
         h.push(handles);
     }
-    s.set_rbd_timestep(job.scene.dt as f32, 4);
-    s.set_rbd_collisions_capacity((job.scene.size * 32).max(128) as u32);
+    let substeps = if job.scene.robot.is_some() {
+        ROBOT_SUBSTEPS
+    } else {
+        4
+    };
+    s.set_rbd_timestep(job.scene.dt as f32, substeps);
+    s.set_rbd_collisions_capacity(collision_capacity(job));
+    if job.scene.robot.is_some() {
+        s.set_rbd_mb_contact_constraints_capacity(ROBOT_CONTACT_CAPACITY);
+    }
     s.finalize(b).await?;
     s.set_rbd_gravity(b, job.scene.gravity.map(|x| x as f32));
+    if job.scene.robot.is_some() {
+        s.set_rbd_implicit_coriolis(b, false);
+        s.set_rbd_substep_refresh(ROBOT_REFRESH, ROBOT_REFRESH_LIGHT);
+    }
     Ok((s, h))
 }
 async fn poses(
@@ -29,6 +71,13 @@ async fn poses(
     s: &NexusState,
     h: &[Vec<RigidBodyHandle>],
 ) -> Result<Vec<[f64; 7]>> {
+    if job.scene.mpm.is_some() {
+        let points = s.mpm.as_ref().unwrap().particles.read_positions(b).await?;
+        return Ok(points
+            .iter()
+            .map(|p| [p.x as f64, p.y as f64, p.z as f64, 0., 0., 0., 1.])
+            .collect());
+    }
     let p = s.read_rigid_body_poses(b).await;
     let mut out = vec![];
     for (e, handles) in h.iter().enumerate() {
@@ -75,7 +124,14 @@ async fn run() -> Result<()> {
     let start = Instant::now();
     let mut pipeline = NexusPipeline::default();
     let (mut s, _) = state(&job, &b).await?;
-    pipeline.preload_pipelines(&b, NexusPipelineMask::RBD)?;
+    pipeline.preload_pipelines(
+        &b,
+        if job.scene.mpm.is_some() {
+            NexusPipelineMask::MPM
+        } else {
+            NexusPipelineMask::RBD
+        },
+    )?;
     b.synchronize()?;
     let setup = start.elapsed().as_secs_f64();
     if let Some(memory) = &memory {
@@ -96,6 +152,7 @@ async fn run() -> Result<()> {
         memory.sample("reset");
     }
     let mut frames = vec![];
+    let mut capacity_samples = vec![];
     if job.mode == "capture" {
         frames.push(Frame {
             step: 0,
@@ -143,6 +200,32 @@ async fn run() -> Result<()> {
                 .await?;
         } else {
             pipeline.simulate(&b, &mut s, None).await?;
+        }
+        // Read actual per-step demand only in the untimed robotics capture.
+        // The ordinary auto-resize counters lag the GPU by a frame or two.
+        if job.mode == "capture" && job.scene.robot.is_some() {
+            let rbd = s.rbd.as_ref().unwrap();
+            let pairs: Vec<u32> = b
+                .slow_read_vec(rbd.collision_pairs_len_gpu().buffer())
+                .await?;
+            let contacts: Vec<u32> = b
+                .slow_read_vec(rbd.multibodies().mb_cons_demand().buffer())
+                .await?;
+            let pairs = pairs[0];
+            let contacts = contacts[0];
+            anyhow::ensure!(
+                pairs <= rbd.collision_pairs_capacity(),
+                "collision-pair capacity exceeded"
+            );
+            anyhow::ensure!(
+                contacts <= rbd.mb_contact_constraints_capacity(),
+                "multibody contact capacity exceeded"
+            );
+            capacity_samples.push(serde_json::json!({
+                "step":step,"collision_pairs":pairs,"contact_constraint_slots":contacts,
+                "collision_capacity":rbd.collision_pairs_capacity(),
+                "contact_capacity":rbd.mb_contact_constraints_capacity()
+            }));
         }
         if enabled && (step % PROFILE_BATCH == 0 || step == job.steps) {
             b.synchronize()?;
@@ -216,7 +299,7 @@ async fn run() -> Result<()> {
     } else {
         None
     };
-    let result = AdapterResult {
+    let mut result = AdapterResult {
         schema_version: 1,
         engine: job.engine,
         backend: job.backend,
@@ -230,6 +313,40 @@ async fn run() -> Result<()> {
         gpu_timing,
         memory,
     };
+    if !capacity_samples.is_empty() {
+        std::fs::write(
+            path.with_file_name("capacity-samples.json"),
+            serde_json::to_vec_pretty(&capacity_samples)?,
+        )?;
+    }
+    if let Some(config) = &job.scene.mpm {
+        result.settings = mpm::settings(config);
+        result.settings["warmup_steps_effective"] = serde_json::json!(job.warmup.max(job.steps));
+        result.awake_count = s.mpm.as_ref().unwrap().particles.len();
+    }
+    if let Some(robot) = &job.scene.robot {
+        let rbd = s.rbd.as_ref().unwrap();
+        let params = s.rbd_sim_params(0).unwrap();
+        let (substep_refresh, substep_refresh_light) = s.rbd_substep_refresh();
+        result.settings["solver_iterations"] = serde_json::json!(rbd.num_solver_iterations());
+        result.settings["substeps"] = serde_json::json!(rbd.num_solver_iterations());
+        result.settings["collision_capacity"] = serde_json::json!(ROBOT_COLLISION_CAPACITY);
+        result.settings["robot"] = serde_json::json!({
+            "model":robot.model,"source_commit":robot.source_commit,
+            "initial_keyframe":robot.initial_keyframe,"target_keyframe":robot.target_keyframe,
+            "ctrl":robot.ctrl,"self_contacts":false,
+            "multibody_pgs_iterations":rbd.num_internal_pgs_iterations(),
+            "implicit_coriolis":s.rbd_implicit_coriolis(),
+            "substep_refresh":substep_refresh,"substep_refresh_light":substep_refresh_light,
+            "friction_in_bias_pass":params.friction_in_bias_pass != 0,
+            "contact_capacity_requested_per_environment":ROBOT_CONTACT_CAPACITY,
+            "collision_capacity_total":rbd.collision_pairs_capacity(),
+            "contact_capacity_total":rbd.mb_contact_constraints_capacity(),
+            "last_observed_collision_pairs":rbd.collision_pairs_len(),
+            "last_observed_contact_constraints":rbd.mb_contact_constraints_len(),
+            "capacity_resize_policy":"grow"
+        });
+    }
     std::fs::write(path, serde_json::to_vec_pretty(&result)?)?;
     Ok(())
 }

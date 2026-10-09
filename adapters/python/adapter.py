@@ -14,6 +14,8 @@ def numbers(v):
 
 
 def mjcf(scene):
+    if scene.get("robot"):
+        return scene["robot"]["xml"]
     root = ET.Element("mujoco", model="physmark")
     ET.SubElement(root, "compiler", angle="radian", inertiafromgeom="false")
     option = ET.SubElement(
@@ -87,6 +89,11 @@ def mjcf(scene):
     return ET.tostring(root, encoding="unicode")
 
 
+def robot_settings(job):
+    r = job["scene"]["robot"]
+    return {k: r[k] for k in ("model", "source_commit", "source_path", "initial_keyframe", "target_keyframe", "ctrl", "self_contacts")}
+
+
 class Mujoco:
     def __init__(self, job, xml):
         import mujoco
@@ -99,7 +106,8 @@ class Mujoco:
         if self.model.opt.enableflags & int(mujoco.mjtEnableBit.mjENBL_SLEEP):
             raise RuntimeError("MuJoCo sleeping must be disabled")
         self.ids = [
-            mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, f"body_{b['id']}")
+            mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY,
+                job["scene"]["robot"]["body_names"][b["id"]-1] if job["scene"].get("robot") else f"body_{b['id']}")
             for b in job["scene"]["bodies"]
             if b["dynamic"]
         ]
@@ -115,11 +123,17 @@ class Mujoco:
             "contact_solref": [0.02, 1],
             "friction_cone": "pyramidal",
         }
+        if job["scene"].get("robot"):
+            self.settings.update(robot=robot_settings(job), iterations=int(self.model.opt.iterations),
+                friction_cone=str(self.model.opt.cone), contact_solref="Menagerie defaults")
         self.reset()
 
     def reset(self):
         for d in self.data:
             self.mj.mj_resetData(self.model, d)
+            if self.job["scene"].get("robot"):
+                d.qpos[:] = self.job["scene"]["robot"]["qpos"]
+                d.ctrl[:] = self.job["scene"]["robot"]["ctrl"]
             self.mj.mj_forward(self.model, d)
 
     def advance(self, steps):
@@ -350,7 +364,10 @@ class Genesis:
                 substeps=1,
                 gravity=tuple(job["scene"]["gravity"]),
             ),
-            rigid_options=gs.options.RigidOptions(use_hibernation=False, iterations=50),
+            rigid_options=gs.options.RigidOptions(use_hibernation=False, iterations=50,
+                **(dict(friction_cone=gs.friction_cone.elliptic,
+                        enable_torsional_friction=True, enable_rolling_friction=True)
+                   if job["scene"].get("robot") else {})),
             show_viewer=False,
             profiling_options=gs.options.ProfilingOptions(show_FPS=False),
         )
@@ -358,9 +375,15 @@ class Genesis:
             gs.morphs.MJCF(file=str(path)), material=gs.materials.Rigid()
         )
         self.scene.build(n_envs=job["worlds"])
+        if job["scene"].get("robot"):
+            import numpy as np
+            config = job["scene"]["robot"]
+            self.entity.set_qpos(np.tile(config["qpos"], (job["worlds"], 1)))
+            self.robot_dofs = [self.entity.get_joint(n).dofs_idx_local[0] for n in config["joint_names"]]
+            self.entity.control_dofs_position(np.tile(config["ctrl"], (job["worlds"], 1)), self.robot_dofs)
         self.initial = self.scene.get_state()
         self.ids = [
-            self.entity.get_link(f"body_{b['id']}").idx_local
+            self.entity.get_link(job["scene"]["robot"]["body_names"][b["id"]-1] if job["scene"].get("robot") else f"body_{b['id']}").idx_local
             for b in job["scene"]["bodies"]
             if b["dynamic"]
         ]
@@ -380,6 +403,9 @@ class Genesis:
 
     def reset(self):
         self.scene.reset(self.initial)
+        if self.job["scene"].get("robot"):
+            import numpy as np
+            self.entity.control_dofs_position(np.tile(self.job["scene"]["robot"]["ctrl"], (self.job["worlds"], 1)), self.robot_dofs)
 
     def advance(self, steps):
         for _ in range(steps):
@@ -436,11 +462,23 @@ def run(job, evidence_dir=None):
         from memory_usage import MemorySampler
 
         memory = MemorySampler(job["backend"])
-    xml = mjcf(job["scene"])
     start = time.perf_counter()
-    sim = {"mujoco": Mujoco, "mjx": MJX, "newton": Newton, "genesis": Genesis}[
-        job["engine"]
-    ](job, xml)
+    if job["scene"].get("mpm"):
+        from mpm import GenesisMPM, NewtonMPM
+        if job["worlds"] != 1:
+            raise ValueError("MPM benchmarks require exactly one environment")
+        sim = {"genesis": GenesisMPM, "newton": NewtonMPM}[job["engine"]](job)
+    else:
+        xml = mjcf(job["scene"])
+        sim = {"mujoco": Mujoco, "mjx": MJX, "newton": Newton, "genesis": Genesis}[
+            job["engine"]
+        ](job, xml)
+    if job["scene"].get("robot"):
+        sim.settings["robot"] = robot_settings(job)
+        initial_poses = np.asarray(sim.poses()).reshape(job["worlds"], -1, 7)
+        expected = np.asarray([b["position"] for b in job["scene"]["bodies"] if b["dynamic"]])
+        if not np.allclose(initial_poses[:, :, :3], expected, atol=1e-4):
+            raise RuntimeError("MJCF importer initial link poses differ from canonical crouch")
     sim.sync()
     setup = time.perf_counter() - start
     if memory:

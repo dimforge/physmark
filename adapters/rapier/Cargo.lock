@@ -296,6 +296,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
+name = "mjcf-rs"
+version = "0.36.0"
+dependencies = [
+ "glamx",
+ "log",
+ "roxmltree",
+ "thiserror",
+]
+
+[[package]]
 name = "nalgebra"
 version = "0.35.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -443,6 +453,7 @@ dependencies = [
  "anyhow",
  "physmark-core",
  "rapier3d",
+ "rapier3d-mjcf",
  "rayon",
  "serde_json",
 ]
@@ -506,6 +517,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "rapier3d-mjcf"
+version = "0.36.0"
+dependencies = [
+ "anyhow",
+ "bitflags",
+ "log",
+ "mjcf-rs",
+ "rapier3d",
+]
+
+[[package]]
 name = "rawpointer"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -536,6 +558,12 @@ name = "robust"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4e27ee8bb91ca0adcf0ecb116293afa12d393f9c2b9b9cd54d33e8078fe19839"
+
+[[package]]
+name = "roxmltree"
+version = "0.20.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6c20b6793b5c2fa6553b250154b78d6d0db37e72700ae35fad9387a46f487c97"
 
 [[package]]
 name = "rstar"

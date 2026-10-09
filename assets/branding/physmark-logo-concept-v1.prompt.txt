@@ -1,0 +1,20 @@
+Tool: built-in image_gen (generation followed by refinement)
+
+Concept: A rigid cube above a measurement datum, with a lowercase wordmark. Mint and ink colors follow the PhysMark report palette.
+
+Generation prompt:
+Use case: logo-brand.
+Design a polished, original, extremely minimal logo for "physmark", an open-source physics-engine benchmarking tool. This is a finished logo concept, not an infographic or a software screenshot.
+Create a single horizontal logo lockup, centered on a uniform deep ink navy background (#0d141b), with generous clear space. One small, memorable geometric symbol on the left; exact lowercase wordmark "physmark" on the right. No tagline or any other text.
+Symbol concept: a simple solid isometric cube suspended a small, deliberate distance above a short horizontal measurement datum. The datum has a tiny upward tick at each end, like an understated caliper. The cube represents simulated rigid bodies; the datum represents precise measurement. Make the cube and datum feel like one coherent compact emblem, not a diagram. Three flat faces of the cube in restrained mint/teal tones based on #41dcc3; crisp geometric edges and balanced negative space. The symbol must remain clear at favicon size and be readily reproducible as a single-color mark.
+Typography: warm-white (#eaf1f7), contemporary lowercase geometric sans serif, medium-semibold weight, carefully optically kerned, understated and confident. Keep letterforms highly legible and ordinary; no decorative ligatures. Wordmark cap/x-height and icon size should be professionally balanced.
+Style: premium independent developer-tool identity, Swiss typographic restraint, vector-like flat construction, no gradients, no glow, no shadows, no texture, no photorealism, no mockup objects, no additional ornaments, no borders, no grid, no watermark. Avoid atom orbits, speedometers, rockets, motion streaks, graph arrows and generic AI starbursts. A wide landscape composition with one logo only.
+
+Refinement prompt:
+Edit this PhysMark logo into an absolutely flat graphic suitable for a minimal professional brand. Keep the same cube-above-caliper symbol, exact lowercase "physmark" lettering, horizontal layout and proportions. Change ONLY the graphic treatment.
+Remove ALL glow, bloom, shadows, gradients, luminous haze, feathering, highlights and texture. All edges should be crisp.
+Fill the entire canvas with a single completely opaque uniform dark navy color #0d141b. Background pixels must all be that same color, right up to every shape's edge; no halos and no transparency.
+Fill the wordmark with the single flat color #eaf1f7, without any variation.
+Fill each cube face with a uniform flat color: top #7ce8d6, left #41dcc3, right #239b91. No shading or gradient within any face.
+Fill the measurement line and its tiny end ticks with flat #41dcc3. Preserve the small gap below the cube. No outlines, no additional text, no additional graphics.
+Think of a clean SVG screenshot made only from filled polygons and a flat typographic wordmark. Not a glowing sign or a 3D rendering.

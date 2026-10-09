@@ -1,0 +1,15 @@
+name = "Go1 stand-up — environment scaling"
+engines = ["rapier", "mujoco", "nexus", "genesis"]
+scenarios = ["robot_go1"]
+sizes = [1]
+worlds = [1, 4, 16, 64, 256, 1024, 4096]
+steps = 480
+warmup = 480
+repeats = 3
+seeds = [42]
+dt = 0.004166666666666667
+capture = true
+capture_stride = 8
+timeout_seconds = 900
+cpu_timeout_seconds = 120
+skip_after_resource_limit = true

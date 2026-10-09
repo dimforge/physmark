@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/branding/physmark-logo.svg" alt="PhysMark." width="600">
+</p>
+
 # PhysMark
 
 A local, source-pinned physics benchmark suite with a Rust controller, six real engine adapters, shared scenarios, physical sanity checks, and an offline report containing curves, a leaderboard, screenshots and MP4 videos.
@@ -45,6 +49,9 @@ cargo run --release -- run --suite suites/coverage.toml
 # CPU-only comparison:
 cargo run --release -- run --engines rapier,mujoco,mjx,newton,genesis --backend genesis=cpu --no-capture
 
+# Four large single-world scenes: 10,000 bodies, Rapier, five repeats:
+cargo run --release -- run --suite suites/large-single-world.toml
+
 # Native batched execution versus serial independent worlds:
 cargo run --release -- run --suite suites/batch.toml
 
@@ -63,7 +70,7 @@ cargo run --release -- scene mixed_pile --size 32 --seed 42 --output scene.json
 
 A run returns a nonzero exit code if any trial fails or is skipped. The report still includes those trials. An existing output directory is never overwritten by a fresh `run`; select another with `--output`.
 
-To continue an interrupted run, repeat its suite/options with `--output results/<run> --resume`. Completed results are preserved, interrupted attempts are archived, and resumed harness provenance is saved in `resume-history.json`. Resumption requires the same suite, engine pins, backends, requested threads, Python package versions, Rust version and machine metadata. A known resource-failing case can be excluded from further attempts with `--skip-case 'mjx:stacks:1024:1=reason'` (engine:scenario:bodies:worlds). These skipped trials remain visible and prevent a complete-suite score. No case is skipped automatically. Environment counts run in ascending order, with deterministic shuffled trials within each count. On macOS, set `PHYSMARK_MEMORY_LIMIT_GIB=72` to terminate an adapter if its physical footprint exceeds that limit (sampled once per second by the controller and recorded in provenance).
+To continue an interrupted run, repeat its suite/options with `--output results/<run> --resume`. Completed results are preserved, interrupted attempts are archived, and resumed harness provenance is saved in `resume-history.json`. Resumption requires the same suite, engine pins, backends, requested threads, Python package versions, Rust version and machine metadata. A known resource-failing case can be excluded from further attempts with `--skip-case 'mjx:stacks:1024:1=reason'` (engine:scenario:bodies:worlds). These skipped trials remain visible and prevent a complete-suite score. Automatic resource-limit skips are opt-in through the suite’s `skip_after_resource_limit` setting; the full Mac suites enable it. Environment counts run in ascending order, with deterministic shuffled trials within each count. On macOS, set `PHYSMARK_MEMORY_LIMIT_GIB=72` to terminate an adapter if its physical footprint exceeds that limit (sampled once per second by the controller and recorded in provenance).
 
 ## Updating engines
 
@@ -98,7 +105,26 @@ All scenes use metres, kilograms, seconds, Z-up, identical explicit mass/inertia
 
 Sizes and world counts are independent suite dimensions. Native MuJoCo and Rapier execute worlds serially; MJX uses `vmap`; Nexus, Genesis and Newton use their native batching. The report exposes this distinction. Sleeping/hibernation is disabled everywhere.
 
-This first version covers rigid primitives and world-anchored hinges. It does **not** claim coverage of every common feature: articulated chains, motors, limits, meshes, CCD, ray queries, deformables and differentiability are future extensions. See [methodology](docs/methodology.md) for what the measurements establish and what they do not.
+Coverage includes rigid primitives, world-anchored hinges, the MJCF robot and single-environment MPM scenes described below. General mesh collision, CCD, ray queries, other deformable solvers and differentiability are not benchmarked. See [methodology](docs/methodology.md) for what the measurements establish and what they do not.
+
+## Single-environment MPM
+
+Three material-point scenes are available: `mpm_elastic_drop` (elastic cube impacting the floor), `mpm_sand_collapse` (granular column collapse), and `mpm_dam_break` (fluid column release in an open tank). These run only on Nexus, Genesis and Newton. Newton selects `SolverImplicitMPM` for MPM; its rigid-body adapter continues to select MuJoCo Warp.
+
+```sh
+# Build the MPM-enabled Nexus adapter and refresh the controller fingerprint:
+cargo run --release -- build --engines rapier,nexus
+
+# Short MPM integration check, including all three supporting engines:
+cargo run --release -- run --suite suites/mpm-smoke.toml
+
+# Particle scaling on this Mac's native GPU backends:
+cargo run --release -- run --suite suites/mpm.toml --engines nexus,genesis --threads 8
+```
+
+MPM size means **particles**, not rigid bodies. Presets use 512, 4,096 and 32,768 particles, exactly one environment, 20 substeps per 1/240-second frame, and identical initial points, density, material parameters and cell width across engines. Increasing particle count refines the same physical volume. Supported sizes are even cubes of at least 64 particles. Unsupported engines are excluded from MPM-only runs; mixed rigid/MPM suites and multiple MPM environments are rejected.
+
+The MPM report uses Genesis as its declared baseline, labels particle counts and particle throughput, and retains synchronized/device timing, RAM/GPU memory, scene previews and videos. Engine constitutive laws and numerical grids differ; matching input parameters does not establish equal accuracy. Newton uses a dense grid on CPU and a sparse grid on CUDA. Nexus and Genesis support Metal here; CUDA execution still needs NVIDIA validation. See the MPM section of [methodology](docs/methodology.md).
 
 ## NVIDIA machines
 
@@ -115,3 +141,38 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 The subprocess protocol and deterministic scene generator live in `crates/physmark-core`; orchestration is in `crates/physmark`; the small Python layer calls the Python-first engines and renders results. Python does not orchestrate benchmark scheduling or sit between the controller and a native engine's timed step loop.
 
+
+### Robotics
+
+The pinned [MuJoCo Menagerie Unitree Go1](https://github.com/google-deepmind/mujoco_menagerie/tree/f054586a8e90465d49ee5be15335c4a0c7f57caf/unitree_go1)
+stands from a crouch using its MJCF `home` actuator controls. Rapier, Nexus,
+MuJoCo and Genesis import the same collision model. The shared renderer shows its
+collision primitives. The model’s BSD-3-Clause notice is retained in [docs/licenses/unitree-go1.txt](docs/licenses/unitree-go1.txt). Keep it with redistributed robot jobs and reports.
+
+```sh
+cargo run --release -- run --suite suites/robot-smoke.toml --threads 8
+cargo run --release -- run --suite suites/robot.toml --threads 8
+```
+
+`robot.toml` scales from one to 4,096 independent environments, with one 13-link,
+12-actuator robot per environment. Invalid stand-up runs remain visible but unranked.
+
+Run the complete Mac round, including rigid sizes, MPM, stack environment scaling
+and robot environment scaling, with eight Rapier workers:
+
+```sh
+.physmark/envs/python/bin/python tools/full_mac.py results/full-mac
+```
+
+This command assumes the release controller and selected engines have been built.
+It automatically generates plots, scene previews, replay videos and the four
+reports, with a shared landing page at `results/full-mac/index.html`.
+Use `--resume` with the same output to
+continue an interrupted round. CPU subprocesses have a 120-second budget;
+subprocesses exceeding a resource limit cause remaining identical/larger
+environment counts of that engine/scene/size to be recorded as skipped. The
+previously stalled Genesis 128-box batches at 256+ environments are excluded.
+
+For a resumed full Mac round, optional `skip-cases.json` in the output directory maps
+`engine:scenario:size:worlds` to an explicit reason. These exclusions are passed to
+the controller and recorded in its resume history and trial outcomes.
