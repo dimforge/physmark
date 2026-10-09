@@ -97,7 +97,25 @@ MPM validation checks particle count, activation count, finite positions, normal
 
 Implementation references are the pinned [Nexus MPM pipeline](https://github.com/dimforge/nexus/blob/1cfbd768db6ac770f302a7f432a43df42953eb67/src_mpm/pipeline.rs), [Genesis MPM materials](https://github.com/Genesis-Embodied-AI/Genesis/tree/02908fe6474d8b073b662347a8794614fa250658/genesis/engine/materials/MPM), and [Newton implicit MPM solver](https://github.com/newton-physics/newton/blob/dd2dace79fd47dd6c198f4a7a2f894c2aa47dcc4/newton/_src/solvers/implicit_mpm/solver_implicit_mpm.py).
 
-### Menagerie Go1 robotics
+### Menagerie robotics
+
+Robots are only benchmarked standing on the ground: every robot is floating-base,
+starts crouched with its feet 3 mm above the floor, and stands under position
+servos, so floor contacts are active throughout. Two models are available:
+`robot_go1` (quadruped, 12 actuators) and `robot_t1` (humanoid, 23 actuators).
+Job validation rejects robot scenes whose base does not start below its
+standing-height ceiling.
+
+`robot_t1` imports the Booster T1 from the same Menagerie commit: 24 links,
+23 position actuators, box feet. It starts from its `home` keyframe with hips,
+knees and ankles further flexed (hip pitch -0.6, knee 1.2, ankle pitch -0.6 rad,
+feet level) and holds the `home` actuator targets. Menagerie's kp = 75, kv = 5
+servos assume a balancing policy; with no controller, MuJoCo probes showed the
+robot tipping over after about 1.5 s, so all servos use kp = 300, kv = 20. Class
+defaults, `inheritrange` and joint `actuatorfrcrange` are resolved into explicit
+`ctrlrange`/`forcerange` on each actuator, keeping Menagerie's torque limits,
+because not every importer supports those attributes. The base must finish
+between 0.55 and 0.75 m, upright and within 1 m of its start.
 
 `robot_go1` imports the Unitree Go1 from the `menagerie` commit in `engines.lock`.
 Every environment contains one free-floating, 13-link robot with 12 position
@@ -138,7 +156,7 @@ Solver/contact approximations differ;
 these are comparable workloads, not claims of identical dynamics.
 
 Scene size is **robots per environment** (currently one); `worlds` sweeps independent
-robots up to 4,096. Each environment must finish upright, with base height between
+robots up to 4,096. Each Go1 environment must finish upright, with base height between
 0.22 and 0.50 m and horizontal drift below 1 m after at least one simulated second.
 All 13 links must remain present and awake. Failing robots are excluded from timing
 rankings. The initial positions are checked against MuJoCo forward kinematics.

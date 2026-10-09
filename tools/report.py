@@ -29,8 +29,14 @@ COLORS = dict(
 )
 
 
+ROBOT_NOTES = {
+    "robot_go1": ("Unitree Go1", "unitree-go1.txt", "robot_go1: one 13-link, 12-actuator Unitree Go1 quadruped from the pinned MuJoCo Menagerie, receiving its MJCF home-keyframe actuator controls."),
+    "robot_t1": ("Booster T1", "booster-t1.txt", "robot_t1: one 24-link, 23-actuator Booster T1 humanoid from the pinned MuJoCo Menagerie, standing to its home keyframe. Its servos are stiffened from kp 75 to kp 300, kv 20 because no balance controller runs; Menagerie torque limits are kept."),
+}
+
+
 def count_unit(scenario):
-    return "robots" if scenario == "robot_go1" else "particles" if scenario.startswith("mpm_") else "bodies"
+    return "robots" if scenario.startswith("robot_") else "particles" if scenario.startswith("mpm_") else "bodies"
 
 
 def count_label(scenario, count):
@@ -811,11 +817,14 @@ def main():
         notes = ["Single-environment MPM. Size is material-point count. Every engine receives the same particle positions, masses, grid spacing, gravity, substeps and simulated horizon. Constitutive laws, grids and collision discretizations differ; this is not an accuracy-equated comparison. The baseline is " + baseline + ".",
                  "MPM throughput plots show particle-steps per second. Snapshots display material points as spheres; their rigid orientation fields are protocol padding. Newton MPM uses SolverImplicitMPM, independently of its rigid-body MuJoCo Warp backend.", *notes]
     robot_license = ""
-    if "robot_go1" in metadata["suite"]["scenarios"]:
-        license_source = Path(__file__).resolve().parents[1] / "docs/licenses/unitree-go1.txt"
-        shutil.copy2(license_source, out / "LICENSE.unitree-go1.txt")
-        robot_license = ' · <a href="LICENSE.unitree-go1.txt">Unitree Go1 model license</a>'
-        notes = ["One scene unit is one 13-link, 12-actuator Unitree Go1 from the pinned MuJoCo Menagerie. The robot starts in a crouch and receives its MJCF home-keyframe actuator controls. Self-contact is disabled consistently; floor contacts remain enabled. Each environment is independent. The standing-height, orientation and drift gates apply to every environment; gallery videos show environment 0.", *notes]
+    for scenario, (title, license_file, note) in ROBOT_NOTES.items():
+        if scenario in metadata["suite"]["scenarios"]:
+            license_source = Path(__file__).resolve().parents[1] / "docs/licenses" / license_file
+            shutil.copy2(license_source, out / f"LICENSE.{license_file}")
+            robot_license += f' · <a href="LICENSE.{license_file}">{title} model license</a>'
+            notes = [note, *notes]
+    if robot_license:
+        notes = ["Robots stand on a ground plane: every environment starts crouched with its feet touching the floor and stands under its position servos. Self-contact is disabled consistently; floor contacts remain enabled. Each environment is independent. The standing-height, orientation and drift gates apply to every environment; gallery videos show environment 0.", *notes]
     units = {count_unit(scenario) for scenario in metadata["suite"]["scenarios"]}
     table_count_unit = next(iter(units)).capitalize() if len(units) == 1 else "Scene size"
     notes_html = (

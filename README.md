@@ -151,21 +151,34 @@ The subprocess protocol and deterministic scene generator live in `crates/physma
 
 ### Robotics
 
-The pinned [MuJoCo Menagerie Unitree Go1](https://github.com/google-deepmind/mujoco_menagerie/tree/f054586a8e90465d49ee5be15335c4a0c7f57caf/unitree_go1)
-stands from a crouch using its MJCF `home` actuator controls. Rapier, Nexus,
-MuJoCo and Genesis import the same collision model. The shared renderer shows its
-collision primitives. The model’s BSD-3-Clause notice is retained in [docs/licenses/unitree-go1.txt](docs/licenses/unitree-go1.txt). Keep it with redistributed robot jobs and reports.
+Robots are benchmarked standing on the ground only: each one starts crouched with
+its feet on the floor and stands under position control, so floor contacts are
+always active. Two robots from the pinned
+[MuJoCo Menagerie](https://github.com/google-deepmind/mujoco_menagerie/tree/f054586a8e90465d49ee5be15335c4a0c7f57caf)
+are available:
+
+| Scenario | Robot | Links | Actuators | Task |
+| --- | --- | ---: | ---: | --- |
+| `robot_go1` | Unitree Go1 quadruped | 13 | 12 | Stand from a crouch to the MJCF `home` controls |
+| `robot_t1` | Booster T1 humanoid | 24 | 23 | Stand from a deeper crouch to `home`; servos stiffened to kp 300, kv 20 |
+
+Rapier, Nexus, MuJoCo and Genesis import the same collision models. The shared
+renderer shows their collision primitives. The models' notices are retained in
+[docs/licenses/unitree-go1.txt](docs/licenses/unitree-go1.txt) (BSD-3-Clause) and
+[docs/licenses/booster-t1.txt](docs/licenses/booster-t1.txt) (Apache-2.0). Keep
+them with redistributed robot jobs and reports.
 
 ```sh
 cargo run --release -- run --suite suites/robot-smoke.toml --threads 8
 cargo run --release -- run --suite suites/robot.toml --threads 8
 ```
 
-`robot.toml` scales from one to 4,096 independent environments, with one 13-link,
-12-actuator robot per environment. Invalid stand-up runs remain visible but unranked.
+`robot.toml` scales both robots from one to 4,096 independent environments, with
+one robot per environment. Invalid stand-up runs remain visible but unranked.
 
-Run the complete Mac round, including rigid sizes, MPM, stack environment scaling
-and robot environment scaling, with eight Rapier workers:
+Run the complete Mac round, including rigid sizes, brick structures up to 500K
+bodies, MPM, brick-structure environment scaling and robot environment scaling,
+with eight Rapier workers:
 
 ```sh
 .physmark/envs/python/bin/python tools/full_mac.py results/full-mac

@@ -1,6 +1,6 @@
-name = "Go1 stand-up — smoke"
+name = "Robots standing on the ground — smoke"
 engines = ["rapier", "mujoco", "nexus", "genesis"]
-scenarios = ["robot_go1"]
+scenarios = ["robot_go1", "robot_t1"]
 sizes = [1]
 worlds = [1, 4]
 steps = 480

@@ -28,7 +28,7 @@ def test_robot_keyframe_controls_stand_up_and_reset_two_independent_environments
     sim.reset()
     np.testing.assert_allclose(sim.poses(), initial)
     assert sim.awake() == 26
-    assert count_unit('robot_go1') == 'robots'
+    assert count_unit('robot_go1') == 'robots' and count_unit('robot_t1') == 'robots'
     for parts in scene['robot']['render_parts']:
         faces = geometry({'parts':parts})
         assert np.isfinite(np.array(faces)).all()
@@ -37,3 +37,18 @@ def test_robot_keyframe_controls_stand_up_and_reset_two_independent_environments
 def test_robot_scene_rejects_multiple_robots_in_one_world():
     with pytest.raises(ValueError, match='size=1'):
         make_scene(ROOT, size=2)
+
+
+def test_humanoid_stands_on_the_ground_from_a_crouch():
+    if not (ROOT / '.physmark/sources/menagerie/booster_t1/t1.xml').exists():
+        pytest.skip('fetch the pinned Menagerie first')
+    scene = make_scene(ROOT, scenario='robot_t1')
+    robot = scene['robot']
+    assert scene['size'] == 24 and len(robot['ctrl']) == 23 and len(robot['qpos']) == 30
+    sim = Mujoco(dict(scene=scene, backend='cpu', worlds=1), mjcf(scene))
+    sim.advance(10)
+    assert sim.data[0].ncon > 0, 'the feet must touch the ground from the start'
+    sim.advance(470)
+    base = np.array(sim.poses())[0]
+    assert robot['minimum_standing_height'] < base[2] < robot['maximum_standing_height']
+    assert sim.data[0].ncon > 0

@@ -164,7 +164,6 @@ fn fetch(root: &Path) -> Result<()> {
             checked(&dir, "git", &["init", "-q"])?;
             checked(&dir, "git", &["remote", "add", "origin", &url])?;
             if name == "menagerie" {
-                // Only the portable Go1 collision model and its license are needed.
                 checked(&dir, "git", &["config", "remote.origin.promisor", "true"])?;
                 checked(
                     &dir,
@@ -172,19 +171,25 @@ fn fetch(root: &Path) -> Result<()> {
                     &["config", "remote.origin.partialclonefilter", "blob:none"],
                 )?;
                 checked(&dir, "git", &["sparse-checkout", "init", "--no-cone"])?;
-                checked(
-                    &dir,
-                    "git",
-                    &[
-                        "sparse-checkout",
-                        "set",
-                        "--no-cone",
-                        "/unitree_go1/go1.xml",
-                        "/unitree_go1/LICENSE",
-                        "/README.md",
-                    ],
-                )?;
             }
+        }
+        if name == "menagerie" {
+            // Only the portable robot collision models and their licenses are needed.
+            // Reapplied on every fetch so existing checkouts gain newly benchmarked robots.
+            checked(
+                &dir,
+                "git",
+                &[
+                    "sparse-checkout",
+                    "set",
+                    "--no-cone",
+                    "/unitree_go1/go1.xml",
+                    "/unitree_go1/LICENSE",
+                    "/booster_t1/t1.xml",
+                    "/booster_t1/LICENSE",
+                    "/README.md",
+                ],
+            )?;
         }
         ensure!(
             command_output(&dir, "git", &["remote", "get-url", "origin"]) == url,
@@ -276,13 +281,15 @@ fn load_scene(
     seed: u64,
     dt: f64,
 ) -> Result<physmark_core::Scene> {
-    if name != "robot_go1" {
+    if !name.starts_with("robot_") {
         return scene(name, size, seed, dt);
     }
     let output = Command::new(python(root))
         .arg(root.join("tools/robot_scene.py"))
         .arg("--root")
         .arg(root)
+        .arg("--scenario")
+        .arg(name)
         .arg("--size")
         .arg(size.to_string())
         .arg("--seed")

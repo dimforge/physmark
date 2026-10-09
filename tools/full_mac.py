@@ -17,7 +17,7 @@ PARTS = [
     ("stacks", "Brick structures", "full-mac-stacks.toml", "Brick ring and pyramid walls smashed by rolling spheres at 1,000, 10,000 and 28,000 bodies; one environment."),
     ("stacks-large", "Large brick structures", "full-mac-stacks-large.toml", "The Nexus 110K brick ring and 500K pyramids, each also at the other's scale; no replay capture."),
     ("environments", "Brick structure environments", "full-mac-environments.toml", "128- and 466-body brick rings and pyramids across 1, 4, 16, 64, 256, 1,024 and 4,096 environments."),
-    ("robot", "Go1 robot environments", "robot.toml", "One 13-link, 12-actuator Go1 per environment; 1 through 4,096 independent environments."),
+    ("robot", "Robot environments", "robot.toml", "One Go1 quadruped (12 actuators) or Booster T1 humanoid (23 actuators) standing on the ground per environment; 1 through 4,096 independent environments."),
 ]
 
 

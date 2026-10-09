@@ -24,6 +24,7 @@ pub const SCENARIOS: &[&str] = &[
     "mpm_sand_collapse",
     "mpm_dam_break",
     "robot_go1",
+    "robot_t1",
 ];
 pub const ENGINES: &[&str] = &["rapier", "nexus", "genesis", "newton", "mujoco", "mjx"];
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -68,7 +69,13 @@ pub struct RobotConfig {
     pub render_parts: Vec<Vec<serde_json::Value>>,
     pub initial_height: f64,
     pub minimum_standing_height: f64,
+    /// Base link origins above this height have left the ground.
+    #[serde(default = "go1_maximum_standing_height")]
+    pub maximum_standing_height: f64,
     pub self_contacts: bool,
+}
+fn go1_maximum_standing_height() -> f64 {
+    0.5
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -204,7 +211,7 @@ impl Job {
                 "robot MJCF adapter is not implemented for this engine"
             );
             ensure!(
-                self.scene.scenario == "robot_go1" && self.scene.mpm.is_none(),
+                self.scene.scenario.starts_with("robot_") && self.scene.mpm.is_none(),
                 "invalid robot scenario"
             );
             ensure!(
@@ -212,19 +219,28 @@ impl Job {
                     && robot.render_parts.len() == self.scene.size,
                 "robot link count mismatch"
             );
+            // One floating base (7 coordinates) plus one coordinate per actuated joint.
             ensure!(
                 robot.ctrl.len() == robot.joint_names.len()
-                    && robot.ctrl.len() == 12
-                    && robot.qpos.len() == 19,
+                    && !robot.ctrl.is_empty()
+                    && robot.qpos.len() == 7 + robot.ctrl.len(),
                 "robot actuator/keyframe mismatch"
             );
             ensure!(
-                !robot.self_contacts && robot.qpos.iter().chain(&robot.ctrl).all(|x| x.is_finite()),
+                !robot.self_contacts
+                    && robot.qpos.iter().chain(&robot.ctrl).all(|x| x.is_finite())
+                    && robot.minimum_standing_height < robot.maximum_standing_height,
                 "invalid robot configuration"
+            );
+            // Robots stand on the ground: the crouched start must already touch it.
+            let base = self.scene.bodies.iter().find(|b| b.dynamic);
+            ensure!(
+                base.is_some_and(|b| b.position[2] < robot.maximum_standing_height),
+                "robot must start on the ground"
             );
         } else {
             ensure!(
-                self.scene.scenario != "robot_go1",
+                !self.scene.scenario.starts_with("robot_"),
                 "missing robot configuration"
             );
         }
@@ -348,8 +364,8 @@ pub fn scene(name: &str, size: usize, seed: u64, dt: f64) -> Result<Scene> {
     );
     ensure!(SCENARIOS.contains(&name), "unknown scenario: {name}");
     ensure!(
-        name != "robot_go1",
-        "robot_go1 requires the pinned MJCF asset loader"
+        !name.starts_with("robot_"),
+        "{name} requires the pinned MJCF asset loader"
     );
     if name.starts_with("mpm_") {
         return mpm::scene(name, size, seed, dt);
@@ -550,7 +566,7 @@ pub fn validate_result(job: &Job, r: &AdapterResult) -> Validation {
             if i % bodies.len() == 0
                 && job.steps as f64 * job.scene.dt >= 1.0
                 && (p[2] < robot.minimum_standing_height
-                    || p[2] > 0.5
+                    || p[2] > robot.maximum_standing_height
                     || rotate(q, [0., 0., 1.])[2] < 0.8
                     || p[0].hypot(p[1]) > 1.0)
             {
@@ -616,7 +632,7 @@ mod tests {
     #[test]
     fn scenes_reproduce_and_validate() {
         for n in SCENARIOS {
-            if n.starts_with("mpm_") || *n == "robot_go1" || stacks::SCENARIOS.contains(n) {
+            if n.starts_with("mpm_") || n.starts_with("robot_") || stacks::SCENARIOS.contains(n) {
                 continue;
             }
             let s = scene(n, 19, 42, 1. / 120.).unwrap();
