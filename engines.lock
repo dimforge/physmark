@@ -33,6 +33,15 @@ adapter = "python"
 source = "mujoco"
 solver = "jax"
 
+# Binary wheels only: the commit records the tagged source; the build installs `distribution`.
+[engines.isaac]
+repository = "https://github.com/isaac-sim/IsaacSim.git"
+commit = "7c206f75bdadd9e05fc457f19863ca4c3f0cb693"
+adapter = "python"
+distribution = "isaacsim[all,extscache]==6.1.0.0"
+index = "https://pypi.nvidia.com"
+solver = "PhysX 5 TGS"
+
 [dependencies.mujoco-warp]
 repository = "https://github.com/google-deepmind/mujoco_warp.git"
 commit = "6058495b38d12c0db83fcaaea739c7200cffb43c"

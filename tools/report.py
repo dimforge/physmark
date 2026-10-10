@@ -26,6 +26,7 @@ COLORS = dict(
     newton="#9467df",
     mujoco="#579df2",
     mjx="#b9c44a",
+    isaac="#2f9e5a",
 )
 
 

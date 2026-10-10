@@ -26,7 +26,9 @@ pub const SCENARIOS: &[&str] = &[
     "robot_go1",
     "robot_t1",
 ];
-pub const ENGINES: &[&str] = &["rapier", "nexus", "genesis", "newton", "mujoco", "mjx"];
+pub const ENGINES: &[&str] = &[
+    "rapier", "nexus", "genesis", "newton", "mujoco", "mjx", "isaac",
+];
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Body {

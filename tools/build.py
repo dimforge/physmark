@@ -30,17 +30,41 @@ def install(*args, env=None):
     run("uv", "pip", "install", "--python", PY, *args, env=env)
 
 
+def isaac_supported():
+    return platform.system() in ("Linux", "Windows") and platform.machine().lower() in (
+        "x86_64", "amd64", "aarch64", "arm64")
+
+
+def build_isaac():
+    """Isaac Sim pins its own Torch and Kit packages, so it lives in a separate environment.
+
+    Accepting its EULA (OMNI_KIT_ACCEPT_EULA=YES) is left to the user, at run time.
+    """
+    import tomllib
+
+    pin = tomllib.loads((ROOT / "engines.lock").read_text())["engines"]["isaac"]
+    python = CACHE / "envs/isaac/bin/python"
+    if not python.exists():
+        run("uv", "venv", "--python", "3.12", python.parent.parent)
+    run("uv", "pip", "install", "--python", python, pin["distribution"],
+        "--extra-index-url", pin["index"], "--index-strategy", "unsafe-best-match")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--engines", default="all")
     args = parser.parse_args()
-    engines = (
-        {"rapier", "nexus", "genesis", "newton", "mujoco", "mjx"}
-        if args.engines == "all"
-        else set(args.engines.split(","))
-    )
-    if engines - {"rapier", "nexus", "genesis", "newton", "mujoco", "mjx"}:
+    known = {"rapier", "nexus", "genesis", "newton", "mujoco", "mjx", "isaac"}
+    if args.engines == "all":
+        engines = known if isaac_supported() else known - {"isaac"}
+        if not isaac_supported():
+            print("Skipping Isaac Sim: NVIDIA publishes Linux and Windows x86-64/aarch64 wheels only.")
+    else:
+        engines = set(args.engines.split(","))
+    if engines - known:
         parser.error("unknown engine")
+    if "isaac" in engines and not isaac_supported():
+        parser.error("Isaac Sim publishes Linux and Windows wheels only; it cannot be installed here")
     BUILD.mkdir(parents=True, exist_ok=True)
     if not PY.exists():
         run("uv", "venv", "--python", "3.12", PY.parent.parent)
@@ -161,6 +185,8 @@ def main():
         for engine in needed:
             cache[engine] = signature
         cache_file.write_text(json.dumps(cache))
+    if "isaac" in engines:
+        build_isaac()
     run("cargo", "build", "--release", "--locked")
 
 

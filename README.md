@@ -4,7 +4,7 @@
 
 # PhysMark
 
-A local, source-pinned physics benchmark suite with a Rust controller, six real engine adapters, shared scenarios, physical sanity checks, and an offline report containing curves, a leaderboard, screenshots and MP4 videos.
+A local, source-pinned physics benchmark suite with a Rust controller, seven real engine adapters, shared scenarios, physical sanity checks, and an offline report containing curves, a leaderboard, screenshots and MP4 videos.
 
 | Engine | Default on this Mac | Implementation |
 | --- | --- | --- |
@@ -14,6 +14,7 @@ A local, source-pinned physics benchmark suite with a Rust controller, six real 
 | Newton | CPU | `SolverMuJoCo(use_mujoco_cpu=False)` — MuJoCo Warp even on CPU |
 | MuJoCo | CPU | Native library and Python extension built from the pinned source commit |
 | MJX | CPU | MuJoCo MJX **JAX** implementation, JIT + `vmap` |
+| Isaac | — (CUDA elsewhere) | Isaac Sim 6.1 PhysX 5 GPU dynamics, USD stage built directly; Linux/Windows with an NVIDIA GPU only |
 
 MuJoCo Warp is a pinned Newton dependency, not a separately benchmarked engine. No engine is replaced by a mock or by another solver when its backend is unavailable. An unavailable backend produces a failed trial.
 
@@ -136,6 +137,17 @@ The MPM report uses Genesis as its declared baseline, labels particle counts and
 ## NVIDIA machines
 
 The Python adapters accept `--backend genesis=cuda,newton=cuda,mjx=cuda`; Nexus accepts CUDA when built with `PHYSMARK_NEXUS_FEATURES=cuda`. These paths are wired but require validation on NVIDIA hardware. The checked dependency lock was resolved on macOS arm64; a Linux CUDA environment requires compatible CUDA-enabled Torch/Warp/JAX packages and a reviewed platform lock. The build helper accepts `PHYSMARK_NEXUS_FEATURES=webgpu` as well. Linux CUDA memory collection uses NVML per-process counters when the driver exposes them, with explicit unavailable status otherwise. This Mac cannot validate CUDA execution or NVML hardware counters.
+
+## Isaac Sim
+
+The Isaac adapter (`adapters/isaac`) builds each scene directly as a USD stage, runs PhysX 5 TGS with GPU dynamics (`backend=cuda`, the default) or on the CPU (`backend=cpu`), and reads poses through the PhysX tensor API. It supports the rigid primitive scenes, world-anchored hinges and initial velocities; robots and MPM are not wired. Environments are laid out side by side on a grid whose spacing keeps their grounds apart. NVIDIA publishes Isaac Sim wheels for Linux and Windows only, so `build` skips it on macOS and it has not been validated on this Mac.
+
+`engines.lock` records the Isaac Sim 6.1.0 tag commit and the exact wheel (`isaacsim[all,extscache]==6.1.0.0` from `pypi.nvidia.com`). Isaac Sim pins its own Torch and Kit packages, so `build --engines isaac` installs it into a separate `.physmark/envs/isaac` environment. Isaac Sim requires accepting the NVIDIA Omniverse EULA; read it and accept it yourself by exporting `OMNI_KIT_ACCEPT_EULA=YES` before running. The adapter refuses to start otherwise instead of waiting on an interactive prompt.
+
+```sh
+cargo run --release -- build --engines isaac,mujoco
+cargo run --release -- run --suite suites/isaac-smoke.toml
+```
 
 ## Development
 

@@ -140,7 +140,8 @@ fn sources(lock: &toml::Value) -> Vec<(String, String, String)> {
     for group in ["engines", "dependencies"] {
         if let Some(table) = lock[group].as_table() {
             for (name, v) in table {
-                if v.get("source").is_none() {
+                // Shared checkouts (MJX) and binary distributions (Isaac Sim) are not fetched.
+                if v.get("source").is_none() && v.get("distribution").is_none() {
                     out.push((
                         name.clone(),
                         v["repository"].as_str().unwrap().into(),
@@ -274,6 +275,10 @@ fn stamp(root: &Path) -> Result<String> {
 fn python(root: &Path) -> PathBuf {
     root.join(".physmark/envs/python/bin/python")
 }
+/// Isaac Sim pins its own Python packages, so it gets a separate environment.
+fn isaac_python(root: &Path) -> PathBuf {
+    root.join(".physmark/envs/isaac/bin/python")
+}
 fn load_scene(
     root: &Path,
     name: &str,
@@ -310,7 +315,11 @@ fn adapter_command(root: &Path, engine: &str) -> Command {
             "adapters/{engine}/target/release/physmark-{engine}"
         )))
     } else {
-        let mut c = Command::new(python(root));
+        let mut c = Command::new(if engine == "isaac" {
+            isaac_python(root)
+        } else {
+            python(root)
+        });
         c.arg(root.join(format!("adapters/{engine}/{engine}_adapter.py")));
         c
     }
@@ -540,6 +549,9 @@ fn run(
                 e.to_string(),
                 if cfg!(target_os = "macos") && ["nexus", "genesis"].contains(e) {
                     "metal"
+                } else if *e == "isaac" {
+                    // Isaac Sim requires an NVIDIA GPU; PhysX GPU dynamics is its native mode.
+                    "cuda"
                 } else if *e == "nexus" {
                     "webgpu"
                 } else {
@@ -576,7 +588,7 @@ fn run(
         "use a new output directory, or --resume with an existing output"
     );
     fs::create_dir_all(out.join("runs"))?;
-    let metadata = json!({"schema_version":1,"created_unix":epoch,"suite":suite,"backends":backend_map,"threads_requested":threads,"source_pins":lock(root)?,"lock_hash":hash(&fs::read(root.join("engines.lock"))?),"build_stamp":stamp(root)?,"harness_commit":command_output(root,"git",&["rev-parse","HEAD"]),"harness_status":command_output(root,"git",&["status","--porcelain"]),"hardware":{"uname":command_output(root,"uname",&["-a"]),"cpu":command_output(root,"sysctl",&["-n","machdep.cpu.brand_string"]),"memory_bytes":command_output(root,"sysctl",&["-n","hw.memsize"]),"os":command_output(root,"sw_vers",&[]),"gpu":command_output(root,"system_profiler",&["SPDisplaysDataType"])},"rust":command_output(root,"rustc",&["--version"]),"python_packages":command_output(root,python(root).to_str().unwrap(),&["-c","import importlib.metadata,json;print(json.dumps({d.metadata['Name']:d.version for d in importlib.metadata.distributions()}))"]),"timing":"synchronized warmed fixed-horizon rollouts; setup, JIT, reset, readback and rendering excluded; separate process per trial; serial scheduling","gpu_timing":"independent warmed profiling process per passing GPU trial; device durations only; unavailable is never replaced by wall time; raw method and scope per trial; leaderboard remains synchronized wall time","memory":"independent replay per passing trial; OS process RAM high-water and sampled per-process GPU allocation counters; 10 ms target cadence plus synchronized phase boundaries; ends before readback; RAM and GPU can overlap on unified-memory systems","quality":"baseline sanity gates, not accuracy-equated solvers","thread_note":"thread environment limits are requests; GPU and framework worker counts remain engine dependent"});
+    let metadata = json!({"schema_version":1,"created_unix":epoch,"suite":suite,"backends":backend_map,"threads_requested":threads,"source_pins":lock(root)?,"lock_hash":hash(&fs::read(root.join("engines.lock"))?),"build_stamp":stamp(root)?,"harness_commit":command_output(root,"git",&["rev-parse","HEAD"]),"harness_status":command_output(root,"git",&["status","--porcelain"]),"hardware":{"uname":command_output(root,"uname",&["-a"]),"cpu":command_output(root,"sysctl",&["-n","machdep.cpu.brand_string"]),"memory_bytes":command_output(root,"sysctl",&["-n","hw.memsize"]),"os":command_output(root,"sw_vers",&[]),"gpu":command_output(root,"system_profiler",&["SPDisplaysDataType"])},"rust":command_output(root,"rustc",&["--version"]),"python_packages":command_output(root,python(root).to_str().unwrap(),&["-c","import importlib.metadata,json;print(json.dumps({d.metadata['Name']:d.version for d in importlib.metadata.distributions()}))"]),"isaac_python_packages":command_output(root,isaac_python(root).to_str().unwrap(),&["-c","import importlib.metadata,json;print(json.dumps({d.metadata['Name']:d.version for d in importlib.metadata.distributions()}))"]),"timing":"synchronized warmed fixed-horizon rollouts; setup, JIT, reset, readback and rendering excluded; separate process per trial; serial scheduling","gpu_timing":"independent warmed profiling process per passing GPU trial; device durations only; unavailable is never replaced by wall time; raw method and scope per trial; leaderboard remains synchronized wall time","memory":"independent replay per passing trial; OS process RAM high-water and sampled per-process GPU allocation counters; 10 ms target cadence plus synchronized phase boundaries; ends before readback; RAM and GPU can overlap on unified-memory systems","quality":"baseline sanity gates, not accuracy-equated solvers","thread_note":"thread environment limits are requests; GPU and framework worker counts remain engine dependent"});
     let mut metadata = metadata;
     metadata["memory_limit_bytes"] = json!(memory_limit_bytes()?);
     metadata["scheduling"] = json!(
@@ -907,6 +919,10 @@ fn main() -> Result<()> {
                 entry.get("source").is_none(),
                 "MJX shares the MuJoCo pin; pin mujoco instead"
             );
+            ensure!(
+                entry.get("distribution").is_none(),
+                "{engine} is installed from binary wheels; edit its tag commit and distribution in engines.lock"
+            );
             let dir = root.join(".physmark/sources").join(&engine);
             checked(
                 &dir,
@@ -939,6 +955,8 @@ fn main() -> Result<()> {
             for e in ENGINES {
                 let p = if ["rapier", "nexus"].contains(e) {
                     root.join(format!("adapters/{e}/target/release/physmark-{e}"))
+                } else if *e == "isaac" {
+                    isaac_python(&root)
                 } else {
                     python(&root)
                 };
@@ -1059,6 +1077,16 @@ mod tests {
         }
         assert!(parse_skip_cases(&["mjx:stacks:1024:1=memory limit".into()]).is_ok());
         assert!(parse_skip_cases(&["mjx:stacks:1024:1=".into()]).is_err());
+    }
+    #[test]
+    fn binary_distributions_and_shared_checkouts_are_not_fetched() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let names: Vec<_> = sources(&lock(&root).unwrap())
+            .into_iter()
+            .map(|(name, _, _)| name)
+            .collect();
+        assert!(names.contains(&"mujoco".into()) && names.contains(&"menagerie".into()));
+        assert!(!names.contains(&"isaac".into()) && !names.contains(&"mjx".into()));
     }
     #[test]
     fn process_failure_and_timeout_are_errors() {

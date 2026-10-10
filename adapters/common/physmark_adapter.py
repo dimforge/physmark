@@ -220,7 +220,12 @@ def main(make_sim):
         raise SystemExit("usage: adapter JOB.json RESULT.json")
     job = json.loads(Path(sys.argv[1]).read_text())
     path = Path(sys.argv[2])
-    result = run(job, make_sim, path.parent)
+    sims = []
+    result = run(job, lambda job: sims.append(make_sim(job)) or sims[-1], path.parent)
     temporary = path.with_suffix(".tmp")
     temporary.write_text(json.dumps(result, allow_nan=False, indent=2))
     temporary.replace(path)
+    # Some runtimes (Isaac Sim's Kit) must be shut down explicitly, after the result is safe.
+    for sim in sims:
+        if hasattr(sim, "close"):
+            sim.close()
