@@ -8,7 +8,7 @@ use physmark_core::{AdapterResult, Frame, GpuTiming, Job, read_job};
 use std::time::Instant;
 mod mpm;
 
-// Go1 stand-up settings; other rigid scenes keep their existing defaults.
+// Robot stand-up settings; other rigid scenes keep their existing defaults.
 const ROBOT_SUBSTEPS: u32 = 4;
 const ROBOT_PGS_ITERATIONS: u32 = 4;
 const ROBOT_REFRESH: bool = false;
@@ -167,7 +167,7 @@ async fn run() -> Result<()> {
     let mut timers = vec![];
     let mut query_capacity = 0;
     if profiling {
-        // Apple M4 Max limits the sample buffer to 32 KiB = 2048 pairs.
+        // Some Metal devices limit the sample buffer to 32 KiB = 2048 pairs.
         // Allocation failure and unsupported queries both produce Noop in Khal.
         for capacity in [2048, 1024, 512, 256, 128, 64] {
             let timer = GpuTimestamps::new(&b, capacity);

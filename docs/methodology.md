@@ -34,7 +34,7 @@ Every passing GPU wall-time trial is followed by a **separate profiling process*
 | MJX CUDA | JAX/XLA CUPTI activity trace | Union of GPU stream activity intervals on device 0 |
 | Genesis Metal | Unavailable with pinned Quadrants 1.3.3 | Its Metal runtime does not connect a device profiler; the generic kernel profiler is a host-clock profiler |
 
-Nexus collects each step exactly once, in batches of eight independent query managers. It synchronizes and harvests every batch so pending readbacks cannot silently skip steps. The adapter rejects empty, invalid or potentially exhausted query buffers. Raw per-step durations and totals per pass label are saved in `gpu-samples.json`. Profiling pass boundaries and batch barriers can change GPU scheduling; these samples describe the instrumented replay, not a subtraction from the uninstrumented wall time. On the M4 Max, per-pass counter sampling has significant overhead: GPU sample totals can exceed the uninstrumented synchronized duration. There is no assertion that the GPU curve must be lower. Query-buffer allocation adapts to supported sizes (up to 2048 pairs, the observed 32 KiB Metal limit), and records the selected capacity.
+Nexus collects each step exactly once, in batches of eight independent query managers. It synchronizes and harvests every batch so pending readbacks cannot silently skip steps. The adapter rejects empty, invalid or potentially exhausted query buffers. Raw per-step durations and totals per pass label are saved in `gpu-samples.json`. Profiling pass boundaries and batch barriers can change GPU scheduling; these samples describe the instrumented replay, not a subtraction from the uninstrumented wall time. Per-pass counter sampling can have significant overhead: GPU sample totals can exceed the uninstrumented synchronized duration. There is no assertion that the GPU curve must be lower. Query-buffer allocation adapts to supported sizes (up to 2048 pairs, the 32 KiB sample-buffer limit of some Metal devices), and records the selected capacity.
 
 Warp's outer `ScopedTimer.elapsed` is a **host** duration and is not used. Individual `timing_results[].elapsed` are device-event durations. Their sum can double-count overlapping streams and excludes work outside Warp's instrumentation. Genesis and MJX instead use a union of intervals to count overlapping device work once. Host trace lanes, CUDA API calls, aggregate XLA module lanes and other devices are excluded. These scopes are intentionally recorded rather than presented as equivalent kernel-only measurements. GPU clocks, contention and profiling overhead can differ between the two processes.
 
@@ -65,6 +65,32 @@ RAM peaks are kernel-maintained high-water marks from process launch through the
 Rust adapters and Python engines use the same native sampler in `physmark-core`. `build` produces its shared library as well as the adapters. The 1 Hz macOS controller memory cap is a separate process-safety mechanism, not the memory measurement source.
 
 Counter references: [Apple Metal allocation counter](https://developer.apple.com/documentation/metal/mtldevice/currentallocatedsize), [Apple rusage structure](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/sys/resource.h), [Linux proc status](https://man7.org/linux/man-pages/man5/proc_pid_status.5.html), [NVIDIA NVML process queries](https://docs.nvidia.com/deploy/nvml-api/latest/api/group__nvmlDeviceQueries.html).
+
+## Engines and environments
+
+| Engine | Implementation |
+| --- | --- |
+| Rapier | Native Rust, `parallel` feature, explicit thread budget; worlds run serially |
+| Nexus | Native Rust GPU pipeline (Metal, CUDA, WebGPU or CPU feature); native batching |
+| Genesis | Genesis rigid and MPM solvers through Python; native batching |
+| Newton | `SolverMuJoCo(use_mujoco_cpu=False)`, i.e. MuJoCo Warp, for rigid bodies; `SolverImplicitMPM` for MPM |
+| MuJoCo | Native library and Python extension built from the pinned source commit; worlds run serially |
+| MJX | MuJoCo MJX JAX implementation, JIT-compiled and `vmap`ped across worlds |
+| Isaac Sim | PhysX 5 through Isaac Sim's wheels, USD stage built directly (see below) |
+
+MuJoCo Warp is a pinned Newton dependency, not a separately benchmarked engine. MJX shares MuJoCo's pin; Newton, MuJoCo and MuJoCo Warp may need coordinated pin updates (`pin mujoco-warp <ref>`). No engine is replaced by a mock or by another solver when its backend is unavailable: an unavailable backend produces a failed trial, and the full round skips the engine instead.
+
+`build` installs the Python engines into `.physmark/envs/python` (Isaac Sim into `.physmark/envs/isaac`), builds pinned upstream sources from `.physmark/sources`, and never installs into the system Python. `requirements.lock` was resolved on macOS arm64; every locked package also has Linux distributions, and Torch pulls its CUDA libraries as dependencies there. On NVIDIA machines the build adds the JAX CUDA 13 plugin matching the locked JAX; this CUDA path has not yet been validated. Linux memory collection uses NVML per-process counters when the driver exposes them; Windows has no RAM/GPU counters yet and reports them unavailable.
+
+Coverage includes rigid primitives, world-anchored hinges, the MJCF robots and single-environment MPM. General mesh collision, CCD, ray queries, other deformable solvers and differentiability are not benchmarked.
+
+## Runs, resumption and skips
+
+A run returns a nonzero exit code if any trial fails or is skipped; the report still includes those trials. A fresh run never overwrites an existing output directory. `--output <dir> --resume` continues an interrupted run: completed results are kept, interrupted attempts are archived, and resumed provenance is saved in `resume-history.json`. Resumption requires the same suite, engine pins, backends, requested threads, Python package versions, Rust version and machine metadata.
+
+`--skip-case 'engine:scenario:size:worlds=reason'` excludes a known resource-failing case; skipped trials stay visible and prevent a complete-suite score. Suites with `skip_after_resource_limit` record the remaining identical/larger environment batches of an engine/scene/size as skipped after a timeout or memory-cap failure. Environment counts run in ascending order, with deterministic shuffled trials within each count. On macOS, `PHYSMARK_MEMORY_LIMIT_GIB` terminates an adapter whose physical footprint exceeds the limit (sampled once per second and recorded in provenance).
+
+In reports, solid curves show synchronized wall time and dashed curves device timestamps from the separate profiling replay; the leaderboard uses synchronized time. On unified-memory GPUs (Apple), RAM and GPU allocations overlap and must not be added.
 
 ## Repeatability and scope
 
@@ -147,17 +173,7 @@ capacities and the latest asynchronous demand counters. The latter are not
 peak measurements. Untimed capture replays also read actual GPU demand after
 each step into `capacity-samples.json` and reject capacity overflow. Neither
 the timing nor the memory replay performs those extra diagnostic readbacks.
-Earlier presets are preserved in the report archives. The original
-two-substep/eight-PGS run also enabled light refresh and biased-pass friction.
-The new two-substep/eight-PGS and four-substep/four-PGS comparison keeps both
-disabled. These settings apply only to the Go1
-stand-up workload. The local Nexus optimization branch parallelizes contact-segment
-allocation and selects 32-thread constraint workgroups when all multibodies have
-at most 32 DOFs. Its fixed-settings optimization comparison used one substep and
-four PGS iterations on both sides and is retained separately. The new iteration
-comparison uses the same optimized engine for all configurations.
-Its unpublished commit is pinned in `engines.lock`; the recorded Git bundle and
-Nexus workspace lockfile reproduce the local engine build without a push.
+These settings apply to every robot workload.
 Solver/contact approximations differ;
 these are comparable workloads, not claims of identical dynamics.
 
@@ -177,7 +193,7 @@ engines that fail a two-step probe trial are skipped and listed, never substitut
 The plan, including probe outcomes, is saved in `round-plan.json` and reused on
 `--resume` so resumed suites keep their backends. CPU subprocesses are limited to
 120 seconds including setup, warmup and rollout; GPU budgets are declared in each
-preset. On macOS, a physical-footprint cap of 56% of RAM (72 GiB on 128 GiB) limits
+preset. On macOS, a physical-footprint cap of 56% of RAM limits
 each adapter. `skip_after_resource_limit` records subsequent identical/larger
 environment batches as skipped after a timeout or memory-cap error. Accuracy-gate
 failures remain distinct from resource failures.

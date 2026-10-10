@@ -113,7 +113,7 @@ def plan_round(output, threads, skip_build):
             del backends[engine]
     memory_limit = None
     if caps["system"] == "Darwin" and caps["memory_bytes"]:
-        # macOS only (the controller samples the physical footprint): 72 GiB on a 128 GiB machine.
+        # macOS only: the controller samples the adapter's physical footprint.
         memory_limit = int(os.environ.get("PHYSMARK_MEMORY_LIMIT_GIB") or int(caps["memory_bytes"] / 2**30 * 0.5625))
     return dict(created_unix=time.time(), capabilities=caps, backends=backends, skipped=skipped,
                 threads=threads, memory_limit_gib=memory_limit)
