@@ -502,6 +502,38 @@ fn validate_resume_metadata(previous: &Value, current: &Value) -> Result<()> {
     }
     Ok(())
 }
+/// Replaces one pin's commit in the lockfile text, keeping its layout and comments.
+/// MJX shares MuJoCo's commit line, so pinning MuJoCo moves both.
+fn repin(text: &str, group: &str, engine: &str, rev: &str) -> Result<String> {
+    ensure!(
+        rev.len() == 40 && rev.bytes().all(|b| b.is_ascii_hexdigit()),
+        "resolved commit must be a full SHA"
+    );
+    let before: toml::Value = toml::from_str(text)?;
+    let old = before[group][engine]["commit"]
+        .as_str()
+        .context("pin has no commit")?;
+    let updated = text.replace(
+        &format!("commit = \"{old}\""),
+        &format!("commit = \"{rev}\""),
+    );
+    let after: toml::Value = toml::from_str(&updated)?;
+    // Only the requested pin (and MJX alongside MuJoCo) may change.
+    for group in ["engines", "dependencies"] {
+        for (name, entry) in before[group].as_table().into_iter().flatten() {
+            let expected = if name == engine || (engine == "mujoco" && name == "mjx") {
+                rev
+            } else {
+                entry["commit"].as_str().unwrap_or_default()
+            };
+            ensure!(
+                after[group][name]["commit"].as_str() == Some(expected),
+                "pinning {engine} would also change {name}; edit engines.lock by hand"
+            );
+        }
+    }
+    Ok(updated)
+}
 fn parse_skip_cases(specs: &[String]) -> Result<BTreeMap<String, String>> {
     let mut result = BTreeMap::new();
     for spec in specs {
@@ -941,7 +973,7 @@ fn main() -> Result<()> {
     match c.command {
         Action::Fetch => fetch(&root),
         Action::Pin { engine, reference } => {
-            let mut l = lock(&root)?;
+            let l = lock(&root)?;
             let group = if l["engines"].get(&engine).is_some() {
                 "engines"
             } else {
@@ -963,11 +995,9 @@ fn main() -> Result<()> {
                 &["fetch", "--depth", "1", "origin", &reference],
             )?;
             let rev = command_output(&dir, "git", &["rev-parse", "FETCH_HEAD"]);
-            l[group][&engine]["commit"] = toml::Value::String(rev.clone());
-            if engine == "mujoco" {
-                l["engines"]["mjx"]["commit"] = toml::Value::String(rev.clone());
-            }
-            fs::write(root.join("engines.lock"), toml::to_string_pretty(&l)?)?;
+            let path = root.join("engines.lock");
+            let text = repin(&fs::read_to_string(&path)?, group, &engine, &rev)?;
+            fs::write(path, text)?;
             println!("Pinned {engine} to {rev}. Run fetch, build, then smoke tests.");
             Ok(())
         }
@@ -1133,6 +1163,20 @@ mod tests {
         }
         assert!(parse_skip_cases(&["mjx:stacks:1024:1=memory limit".into()]).is_ok());
         assert!(parse_skip_cases(&["mjx:stacks:1024:1=".into()]).is_err());
+    }
+    #[test]
+    fn repin_changes_only_the_commit_and_keeps_layout() {
+        let a = "a".repeat(40);
+        let b = "b".repeat(40);
+        let c = "c".repeat(40);
+        let text = format!(
+            "# kept\n[engines.mujoco]\ncommit = \"{a}\"\n\n[engines.mjx]\ncommit = \"{a}\"\nsource = \"mujoco\"\n\n[dependencies.menagerie]\ncommit = \"{b}\"\n"
+        );
+        let updated = repin(&text, "engines", "mujoco", &c).unwrap();
+        assert_eq!(updated, text.replace(&a, &c));
+        let updated = repin(&text, "dependencies", "menagerie", &c).unwrap();
+        assert_eq!(updated, text.replace(&b, &c));
+        assert!(repin(&text, "engines", "mujoco", "abc").is_err());
     }
     #[test]
     fn binary_distributions_and_shared_checkouts_are_not_fetched() {
