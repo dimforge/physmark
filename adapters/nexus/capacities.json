@@ -1,0 +1,672 @@
+{
+ "_meta": {
+  "nexus_commit": "2e0eab6d3ae52cc155ce59a21a38e2b2fac0447c",
+  "backend": "metal",
+  "repeats": 3,
+  "worlds": 1,
+  "method": "adaptive policies from generous buffers; per-environment peaks over the horizon"
+ },
+ "box_pile": [
+  {
+   "size": 4,
+   "steps": 600,
+   "collision_pairs": 4.0,
+   "collision_pairs_capacity": 64.0,
+   "mb_contact_slots": 0,
+   "mb_contact_slots_capacity": 256.0,
+   "solver_colors": 8
+  },
+  {
+   "size": 8,
+   "steps": 600,
+   "collision_pairs": 8.0,
+   "collision_pairs_capacity": 64.0,
+   "mb_contact_slots": 0,
+   "mb_contact_slots_capacity": 256.0,
+   "solver_colors": 8
+  },
+  {
+   "size": 10,
+   "steps": 600,
+   "collision_pairs": 10.0,
+   "collision_pairs_capacity": 64.0,
+   "mb_contact_slots": 0,
+   "mb_contact_slots_capacity": 256.0,
+   "solver_colors": 8
+  },
+  {
+   "size": 32,
+   "steps": 600,
+   "collision_pairs": 32.0,
+   "collision_pairs_capacity": 128.0,
+   "mb_contact_slots": 0,
+   "mb_contact_slots_capacity": 256.0,
+   "solver_colors": 8
+  },
+  {
+   "size": 64,
+   "steps": 600,
+   "collision_pairs": 64.0,
+   "collision_pairs_capacity": 256.0,
+   "mb_contact_slots": 0,
+   "mb_contact_slots_capacity": 256.0,
+   "solver_colors": 8
+  },
+  {
+   "size": 100,
+   "steps": 600,
+   "collision_pairs": 100.0,
+   "collision_pairs_capacity": 400.0,
+   "mb_contact_slots": 0,
+   "mb_contact_slots_capacity": 256.0,
+   "solver_colors": 8
+  },
+  {
+   "size": 128,
+   "steps": 600,
+   "collision_pairs": 128.0,
+   "collision_pairs_capacity": 512.0,
+   "mb_contact_slots": 0,
+   "mb_contact_slots_capacity": 256.0,
+   "solver_colors": 8
+  },
+  {
+   "size": 1000,
+   "steps": 600,
+   "collision_pairs": 1000.0,
+   "collision_pairs_capacity": 4000.0,
+   "mb_contact_slots": 0,
+   "mb_contact_slots_capacity": 256.0,
+   "solver_colors": 8
+  },
+  {
+   "size": 1024,
+   "steps": 600,
+   "collision_pairs": 1024.0,
+   "collision_pairs_capacity": 4096.0,
+   "mb_contact_slots": 0,
+   "mb_contact_slots_capacity": 256.0,
+   "solver_colors": 8
+  },
+  {
+   "size": 10000,
+   "steps": 600,
+   "collision_pairs": 10383.0,
+   "collision_pairs_capacity": 40000.0,
+   "mb_contact_slots": 0,
+   "mb_contact_slots_capacity": 256.0,
+   "solver_colors": 8
+  }
+ ],
+ "brick_ring": [
+  {
+   "size": 128,
+   "steps": 240,
+   "collision_pairs": 430.0,
+   "collision_pairs_capacity": 640.0,
+   "mb_contact_slots": 0,
+   "mb_contact_slots_capacity": 256.0,
+   "solver_colors": 11
+  },
+  {
+   "size": 466,
+   "steps": 240,
+   "collision_pairs": 2199.0,
+   "collision_pairs_capacity": 3280.0,
+   "mb_contact_slots": 0,
+   "mb_contact_slots_capacity": 256.0,
+   "solver_colors": 16
+  },
+  {
+   "size": 1000,
+   "steps": 240,
+   "collision_pairs": 5625.0,
+   "collision_pairs_capacity": 8400.0,
+   "mb_contact_slots": 0,
+   "mb_contact_slots_capacity": 256.0,
+   "solver_colors": 23
+  },
+  {
+   "size": 10000,
+   "steps": 240,
+   "collision_pairs": 80508.0,
+   "collision_pairs_capacity": 120300.0,
+   "mb_contact_slots": 0,
+   "mb_contact_slots_capacity": 256.0,
+   "solver_colors": 32
+  },
+  {
+   "size": 28000,
+   "steps": 240,
+   "collision_pairs": 227969.0,
+   "collision_pairs_capacity": 341940.0,
+   "mb_contact_slots": 0,
+   "mb_contact_slots_capacity": 256.0,
+   "solver_colors": 32
+  },
+  {
+   "size": 110000,
+   "steps": 240,
+   "collision_pairs": 914868.0,
+   "collision_pairs_capacity": 1372219.0,
+   "mb_contact_slots": 0,
+   "mb_contact_slots_capacity": 256.0,
+   "solver_colors": 64
+  },
+  {
+   "size": 250000,
+   "steps": 240,
+   "collision_pairs": 2088898.0,
+   "collision_pairs_capacity": 3133300.0,
+   "mb_contact_slots": 0,
+   "mb_contact_slots_capacity": 256.0,
+   "solver_colors": 64
+  },
+  {
+   "size": 505922,
+   "steps": 240,
+   "collision_pairs": 4249006.0,
+   "collision_pairs_capacity": 6373230.0,
+   "mb_contact_slots": 0,
+   "mb_contact_slots_capacity": 256.0,
+   "solver_colors": 64
+  }
+ ],
+ "dominoes": [
+  {
+   "size": 8,
+   "steps": 600,
+   "collision_pairs": 25.0,
+   "collision_pairs_capacity": 64.0,
+   "mb_contact_slots": 0,
+   "mb_contact_slots_capacity": 256.0,
+   "solver_colors": 8
+  },
+  {
+   "size": 32,
+   "steps": 600,
+   "collision_pairs": 121.0,
+   "collision_pairs_capacity": 154.0,
+   "mb_contact_slots": 0,
+   "mb_contact_slots_capacity": 256.0,
+   "solver_colors": 8
+  },
+  {
+   "size": 128,
+   "steps": 600,
+   "collision_pairs": 448.0,
+   "collision_pairs_capacity": 616.0,
+   "mb_contact_slots": 0,
+   "mb_contact_slots_capacity": 256.0,
+   "solver_colors": 23
+  },
+  {
+   "size": 1024,
+   "steps": 600,
+   "collision_pairs": 3642.0,
+   "collision_pairs_capacity": 4933.0,
+   "mb_contact_slots": 0,
+   "mb_contact_slots_capacity": 256.0,
+   "solver_colors": 23
+  },
+  {
+   "size": 10000,
+   "steps": 600,
+   "collision_pairs": 35486.0,
+   "collision_pairs_capacity": 48169.0,
+   "mb_contact_slots": 0,
+   "mb_contact_slots_capacity": 256.0,
+   "solver_colors": 32
+  }
+ ],
+ "free_fall": [
+  {
+   "size": 4,
+   "steps": 600,
+   "collision_pairs": 0,
+   "collision_pairs_capacity": 64.0,
+   "mb_contact_slots": 0,
+   "mb_contact_slots_capacity": 256.0,
+   "solver_colors": 8
+  },
+  {
+   "size": 8,
+   "steps": 600,
+   "collision_pairs": 0,
+   "collision_pairs_capacity": 64.0,
+   "mb_contact_slots": 0,
+   "mb_contact_slots_capacity": 256.0,
+   "solver_colors": 8
+  },
+  {
+   "size": 32,
+   "steps": 600,
+   "collision_pairs": 0,
+   "collision_pairs_capacity": 128.0,
+   "mb_contact_slots": 0,
+   "mb_contact_slots_capacity": 256.0,
+   "solver_colors": 8
+  },
+  {
+   "size": 128,
+   "steps": 600,
+   "collision_pairs": 0,
+   "collision_pairs_capacity": 512.0,
+   "mb_contact_slots": 0,
+   "mb_contact_slots_capacity": 256.0,
+   "solver_colors": 8
+  },
+  {
+   "size": 1024,
+   "steps": 600,
+   "collision_pairs": 0,
+   "collision_pairs_capacity": 4096.0,
+   "mb_contact_slots": 0,
+   "mb_contact_slots_capacity": 256.0,
+   "solver_colors": 8
+  },
+  {
+   "size": 10000,
+   "steps": 600,
+   "collision_pairs": 0,
+   "collision_pairs_capacity": 40000.0,
+   "mb_contact_slots": 0,
+   "mb_contact_slots_capacity": 256.0,
+   "solver_colors": 8
+  }
+ ],
+ "friction_ramp": [
+  {
+   "size": 8,
+   "steps": 600,
+   "collision_pairs": 16.0,
+   "collision_pairs_capacity": 64.0,
+   "mb_contact_slots": 0,
+   "mb_contact_slots_capacity": 256.0,
+   "solver_colors": 8
+  },
+  {
+   "size": 32,
+   "steps": 600,
+   "collision_pairs": 57.0,
+   "collision_pairs_capacity": 128.0,
+   "mb_contact_slots": 0,
+   "mb_contact_slots_capacity": 256.0,
+   "solver_colors": 8
+  },
+  {
+   "size": 128,
+   "steps": 600,
+   "collision_pairs": 298.0,
+   "collision_pairs_capacity": 512.0,
+   "mb_contact_slots": 0,
+   "mb_contact_slots_capacity": 256.0,
+   "solver_colors": 8
+  },
+  {
+   "size": 1024,
+   "steps": 600,
+   "collision_pairs": 2230.0,
+   "collision_pairs_capacity": 4096.0,
+   "mb_contact_slots": 0,
+   "mb_contact_slots_capacity": 256.0,
+   "solver_colors": 8
+  },
+  {
+   "size": 10000,
+   "steps": 600,
+   "collision_pairs": 15372.0,
+   "collision_pairs_capacity": 40000.0,
+   "mb_contact_slots": 0,
+   "mb_contact_slots_capacity": 256.0,
+   "solver_colors": 8
+  }
+ ],
+ "mixed_pile": [
+  {
+   "size": 8,
+   "steps": 600,
+   "collision_pairs": 12.0,
+   "collision_pairs_capacity": 64.0,
+   "mb_contact_slots": 0,
+   "mb_contact_slots_capacity": 256.0,
+   "solver_colors": 8
+  },
+  {
+   "size": 32,
+   "steps": 600,
+   "collision_pairs": 55.0,
+   "collision_pairs_capacity": 128.0,
+   "mb_contact_slots": 0,
+   "mb_contact_slots_capacity": 256.0,
+   "solver_colors": 8
+  },
+  {
+   "size": 128,
+   "steps": 600,
+   "collision_pairs": 257.0,
+   "collision_pairs_capacity": 512.0,
+   "mb_contact_slots": 0,
+   "mb_contact_slots_capacity": 256.0,
+   "solver_colors": 8
+  },
+  {
+   "size": 1024,
+   "steps": 600,
+   "collision_pairs": 3886.0,
+   "collision_pairs_capacity": 4933.0,
+   "mb_contact_slots": 0,
+   "mb_contact_slots_capacity": 256.0,
+   "solver_colors": 13
+  },
+  {
+   "size": 10000,
+   "steps": 600,
+   "collision_pairs": 48596.0,
+   "collision_pairs_capacity": 70123.0,
+   "mb_contact_slots": 0,
+   "mb_contact_slots_capacity": 256.0,
+   "solver_colors": 32
+  }
+ ],
+ "pendulums": [
+  {
+   "size": 4,
+   "steps": 600,
+   "collision_pairs": 0,
+   "collision_pairs_capacity": 64.0,
+   "mb_contact_slots": 0,
+   "mb_contact_slots_capacity": 256.0,
+   "solver_colors": 8
+  },
+  {
+   "size": 8,
+   "steps": 600,
+   "collision_pairs": 0,
+   "collision_pairs_capacity": 64.0,
+   "mb_contact_slots": 0,
+   "mb_contact_slots_capacity": 256.0,
+   "solver_colors": 8
+  },
+  {
+   "size": 10,
+   "steps": 600,
+   "collision_pairs": 0,
+   "collision_pairs_capacity": 64.0,
+   "mb_contact_slots": 0,
+   "mb_contact_slots_capacity": 256.0,
+   "solver_colors": 8
+  },
+  {
+   "size": 32,
+   "steps": 600,
+   "collision_pairs": 0,
+   "collision_pairs_capacity": 128.0,
+   "mb_contact_slots": 0,
+   "mb_contact_slots_capacity": 256.0,
+   "solver_colors": 8
+  },
+  {
+   "size": 100,
+   "steps": 600,
+   "collision_pairs": 0,
+   "collision_pairs_capacity": 400.0,
+   "mb_contact_slots": 0,
+   "mb_contact_slots_capacity": 256.0,
+   "solver_colors": 8
+  },
+  {
+   "size": 128,
+   "steps": 600,
+   "collision_pairs": 0,
+   "collision_pairs_capacity": 512.0,
+   "mb_contact_slots": 0,
+   "mb_contact_slots_capacity": 256.0,
+   "solver_colors": 8
+  },
+  {
+   "size": 1000,
+   "steps": 600,
+   "collision_pairs": 0,
+   "collision_pairs_capacity": 4000.0,
+   "mb_contact_slots": 0,
+   "mb_contact_slots_capacity": 256.0,
+   "solver_colors": 8
+  },
+  {
+   "size": 1024,
+   "steps": 600,
+   "collision_pairs": 0,
+   "collision_pairs_capacity": 4096.0,
+   "mb_contact_slots": 0,
+   "mb_contact_slots_capacity": 256.0,
+   "solver_colors": 8
+  },
+  {
+   "size": 10000,
+   "steps": 600,
+   "collision_pairs": 0,
+   "collision_pairs_capacity": 40000.0,
+   "mb_contact_slots": 0,
+   "mb_contact_slots_capacity": 256.0,
+   "solver_colors": 8
+  }
+ ],
+ "pyramids": [
+  {
+   "size": 128,
+   "steps": 240,
+   "collision_pairs": 373.0,
+   "collision_pairs_capacity": 512.0,
+   "mb_contact_slots": 0,
+   "mb_contact_slots_capacity": 256.0,
+   "solver_colors": 20
+  },
+  {
+   "size": 466,
+   "steps": 240,
+   "collision_pairs": 1349.0,
+   "collision_pairs_capacity": 1864.0,
+   "mb_contact_slots": 0,
+   "mb_contact_slots_capacity": 256.0,
+   "solver_colors": 21
+  },
+  {
+   "size": 1000,
+   "steps": 240,
+   "collision_pairs": 2890.0,
+   "collision_pairs_capacity": 4000.0,
+   "mb_contact_slots": 0,
+   "mb_contact_slots_capacity": 256.0,
+   "solver_colors": 21
+  },
+  {
+   "size": 10000,
+   "steps": 240,
+   "collision_pairs": 26201.0,
+   "collision_pairs_capacity": 40000.0,
+   "mb_contact_slots": 0,
+   "mb_contact_slots_capacity": 256.0,
+   "solver_colors": 32
+  },
+  {
+   "size": 28000,
+   "steps": 240,
+   "collision_pairs": 61130.0,
+   "collision_pairs_capacity": 112000.0,
+   "mb_contact_slots": 0,
+   "mb_contact_slots_capacity": 256.0,
+   "solver_colors": 32
+  },
+  {
+   "size": 110000,
+   "steps": 240,
+   "collision_pairs": 220510.0,
+   "collision_pairs_capacity": 440000.0,
+   "mb_contact_slots": 0,
+   "mb_contact_slots_capacity": 256.0,
+   "solver_colors": 64
+  },
+  {
+   "size": 250000,
+   "steps": 240,
+   "collision_pairs": 492413.0,
+   "collision_pairs_capacity": 1000000.0,
+   "mb_contact_slots": 0,
+   "mb_contact_slots_capacity": 256.0,
+   "solver_colors": 64
+  },
+  {
+   "size": 505922,
+   "steps": 240,
+   "collision_pairs": 989363.0,
+   "collision_pairs_capacity": 2023688.0,
+   "mb_contact_slots": 0,
+   "mb_contact_slots_capacity": 256.0,
+   "solver_colors": 64
+  }
+ ],
+ "robot_go1": [
+  {
+   "size": 13,
+   "steps": 480,
+   "collision_pairs": 8.0,
+   "collision_pairs_capacity": 64.0,
+   "mb_contact_slots": 24.0,
+   "mb_contact_slots_capacity": 256.0,
+   "solver_colors": 8
+  }
+ ],
+ "robot_t1": [
+  {
+   "size": 24,
+   "steps": 480,
+   "collision_pairs": 2.0,
+   "collision_pairs_capacity": 96.0,
+   "mb_contact_slots": 24.0,
+   "mb_contact_slots_capacity": 256.0,
+   "solver_colors": 8
+  }
+ ],
+ "sphere_pile": [
+  {
+   "size": 8,
+   "steps": 600,
+   "collision_pairs": 11.0,
+   "collision_pairs_capacity": 64.0,
+   "mb_contact_slots": 0,
+   "mb_contact_slots_capacity": 256.0,
+   "solver_colors": 8
+  },
+  {
+   "size": 32,
+   "steps": 600,
+   "collision_pairs": 62.0,
+   "collision_pairs_capacity": 128.0,
+   "mb_contact_slots": 0,
+   "mb_contact_slots_capacity": 256.0,
+   "solver_colors": 8
+  },
+  {
+   "size": 128,
+   "steps": 600,
+   "collision_pairs": 298.0,
+   "collision_pairs_capacity": 512.0,
+   "mb_contact_slots": 0,
+   "mb_contact_slots_capacity": 256.0,
+   "solver_colors": 8
+  },
+  {
+   "size": 1024,
+   "steps": 600,
+   "collision_pairs": 3227.0,
+   "collision_pairs_capacity": 4096.0,
+   "mb_contact_slots": 0,
+   "mb_contact_slots_capacity": 256.0,
+   "solver_colors": 8
+  },
+  {
+   "size": 10000,
+   "steps": 600,
+   "collision_pairs": 37762.0,
+   "collision_pairs_capacity": 48375.0,
+   "mb_contact_slots": 0,
+   "mb_contact_slots_capacity": 256.0,
+   "solver_colors": 37
+  }
+ ],
+ "stacks": [
+  {
+   "size": 8,
+   "steps": 600,
+   "collision_pairs": 8.0,
+   "collision_pairs_capacity": 64.0,
+   "mb_contact_slots": 0,
+   "mb_contact_slots_capacity": 256.0,
+   "solver_colors": 8
+  },
+  {
+   "size": 10,
+   "steps": 600,
+   "collision_pairs": 10.0,
+   "collision_pairs_capacity": 64.0,
+   "mb_contact_slots": 0,
+   "mb_contact_slots_capacity": 256.0,
+   "solver_colors": 8
+  },
+  {
+   "size": 32,
+   "steps": 600,
+   "collision_pairs": 32.0,
+   "collision_pairs_capacity": 128.0,
+   "mb_contact_slots": 0,
+   "mb_contact_slots_capacity": 256.0,
+   "solver_colors": 8
+  },
+  {
+   "size": 100,
+   "steps": 600,
+   "collision_pairs": 100.0,
+   "collision_pairs_capacity": 400.0,
+   "mb_contact_slots": 0,
+   "mb_contact_slots_capacity": 256.0,
+   "solver_colors": 8
+  },
+  {
+   "size": 128,
+   "steps": 600,
+   "collision_pairs": 128.0,
+   "collision_pairs_capacity": 512.0,
+   "mb_contact_slots": 0,
+   "mb_contact_slots_capacity": 256.0,
+   "solver_colors": 8
+  },
+  {
+   "size": 1000,
+   "steps": 600,
+   "collision_pairs": 1000.0,
+   "collision_pairs_capacity": 4000.0,
+   "mb_contact_slots": 0,
+   "mb_contact_slots_capacity": 256.0,
+   "solver_colors": 8
+  },
+  {
+   "size": 1024,
+   "steps": 600,
+   "collision_pairs": 1024.0,
+   "collision_pairs_capacity": 4096.0,
+   "mb_contact_slots": 0,
+   "mb_contact_slots_capacity": 256.0,
+   "solver_colors": 8
+  },
+  {
+   "size": 10000,
+   "steps": 600,
+   "collision_pairs": 10000.0,
+   "collision_pairs_capacity": 40000.0,
+   "mb_contact_slots": 0,
+   "mb_contact_slots_capacity": 256.0,
+   "solver_colors": 8
+  }
+ ]
+}

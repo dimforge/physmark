@@ -10,6 +10,15 @@ The elapsed interval includes each adapter's actual stepping API overhead. MuJoC
 
 The leaderboard uses a geometric mean of per-case speed ratios relative to native MuJoCo. Every case receives equal weight. Every requested trial for an engine must pass; missing/failed cases never improve its score. A score is withheld when the MuJoCo baseline is incomplete. CPU and GPU backends appear explicitly; do not interpret mixed-device rankings as an intrinsic algorithm ranking.
 
+## Nexus buffer capacities
+
+Nexus stores collision pairs, multibody contact slots and constraint colors in GPU buffers whose size is either fixed or adapted from asynchronous readbacks. Adapted buffers lag the GPU by a frame or two: until a resize lands, overflowing pairs and over-budget constraints are dropped, which showed up as a heavy sphere intermittently sinking through the floor. Benchmarks therefore always use the **fixed** policy, which also removes the per-step readback, with per-environment budgets sized for the whole run:
+
+- `tools/calibrate_nexus.py` runs every (scenario, size) that any suite uses, untimed, three times over the longest horizon any suite uses for that scenario, under Nexus's adaptive policies. Pair and contact buffers start generous so nothing is dropped while measuring; colors start at Nexus's default of 8 and grow on failed coloring. It records per-environment peaks of the GPU pair and contact-slot counters (which count past capacity) and of the color budget after the first 16 steps (before its first readback, Nexus floors large scenes at 32 or 64 colors regardless of need; that floor still bounds the largest scenes from above).
+- The peaks are stored in `adapters/nexus/capacities.json`, compiled into the adapter. A trial uses the entry of its scenario with the smallest calibrated size at least as large as its own: 1.5 × 1.25 × the peak pair and contact demand per environment (at least 64 pairs) and the peak color budget + 4. Sizes above the calibrated range are refused rather than extrapolated. PFM work-list entries share the pair buffer and are at most one per pair for the benchmarked primitives.
+- Every trial reads the pair and contact-slot demand of its final step after the measured interval and fails on overflow; capture replays check every step and save the counts in `capacity-samples.json`. Coloring convergence is not exposed by Nexus's public API, so the color budget relies on the calibration margin.
+- Recalibrate after changing the Nexus pin, solver settings or scenes, then rebuild the adapter.
+
 ## Physical comparability
 
 All engines receive the same scene JSON. Static/dynamic status, primitive dimensions, mass, diagonal inertia, gravity, initial transforms, friction, hinge anchors and timestep are explicit. Restitution and damping are zero. Sleeping is disabled; Rapier checks actual awake bodies, other adapters verify the disabled setting and report the number of simulated bodies (rather than inferring activity from nonzero velocity).
@@ -165,14 +174,9 @@ pinned Rapier MJCF loader and reduced-coordinate multibody joints; MuJoCo and
 Genesis use their native MJCF loaders. The current Nexus robotics preset uses four
 substeps and four internal PGS iterations per substep, explicit Coriolis forces, and
 `friction_in_bias_pass = false`. Both `substep_refresh` and
-`substep_refresh_light` are false. It reserves 64 collision pairs and 32
-multibody contact-constraint slots per environment, with automatic growth
-enabled. Each contact point consumes one normal and two friction slots.
-Robot results record the applied settings, requested capacities, final total
-capacities and the latest asynchronous demand counters. The latter are not
-peak measurements. Untimed capture replays also read actual GPU demand after
-each step into `capacity-samples.json` and reject capacity overflow. Neither
-the timing nor the memory replay performs those extra diagnostic readbacks.
+`substep_refresh_light` are false. Its buffers follow the fixed Nexus capacity
+policy described above; each contact point consumes one normal and two friction
+multibody contact slots.
 These settings apply to every robot workload.
 Solver/contact approximations differ;
 these are comparable workloads, not claims of identical dynamics.

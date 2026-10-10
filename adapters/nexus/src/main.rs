@@ -6,7 +6,9 @@ use nexus3d::prelude::*;
 use physmark_core::memory::MemorySampler;
 use physmark_core::{AdapterResult, Frame, GpuTiming, Job, read_job};
 use std::time::Instant;
+mod capacity;
 mod mpm;
+use capacity::Budget;
 
 // Robot stand-up settings; other rigid scenes keep their existing defaults.
 const ROBOT_SUBSTEPS: u32 = 4;
@@ -14,22 +16,16 @@ const ROBOT_PGS_ITERATIONS: u32 = 4;
 const ROBOT_REFRESH: bool = false;
 const ROBOT_REFRESH_LIGHT: bool = false;
 const ROBOT_FRICTION_IN_BIAS: bool = false;
-const ROBOT_COLLISION_CAPACITY: u32 = 64;
-const ROBOT_CONTACT_CAPACITY: u32 = 32;
 
-fn collision_capacity(job: &Job) -> u32 {
-    if job.scene.robot.is_some() {
-        ROBOT_COLLISION_CAPACITY
-    } else {
-        (job.scene.size * 32).max(128) as u32
-    }
-}
-
-async fn state(job: &Job, b: &GpuBackend) -> Result<(NexusState, Vec<Vec<RigidBodyHandle>>)> {
+async fn state(
+    job: &Job,
+    b: &GpuBackend,
+    budget: Budget,
+) -> Result<(NexusState, Vec<Vec<RigidBodyHandle>>)> {
     if job.scene.mpm.is_some() {
         return Ok((mpm::state(job, b).await?, vec![]));
     }
-    let mut s = NexusState::default();
+    let mut s = NexusState::new(budget.capacities(job.worlds));
     let mut h = vec![];
     for e in 0..job.worlds {
         if e > 0 {
@@ -53,10 +49,6 @@ async fn state(job: &Job, b: &GpuBackend) -> Result<(NexusState, Vec<Vec<RigidBo
         4
     };
     s.set_rbd_timestep(job.scene.dt as f32, substeps);
-    s.set_rbd_collisions_capacity(collision_capacity(job));
-    if job.scene.robot.is_some() {
-        s.set_rbd_mb_contact_constraints_capacity(ROBOT_CONTACT_CAPACITY);
-    }
     s.finalize(b).await?;
     s.set_rbd_gravity(b, job.scene.gravity.map(|x| x as f32));
     if job.scene.robot.is_some() {
@@ -104,10 +96,8 @@ async fn poses(
 fn main() -> Result<()> {
     pollster::block_on(run())
 }
-async fn run() -> Result<()> {
-    let (job, path) = read_job()?;
-    let memory = (job.mode == "memory").then(|| MemorySampler::new(&job.backend));
-    let b = match job.backend.as_str() {
+async fn backend(name: &str) -> Result<GpuBackend> {
+    Ok(match name {
         #[cfg(feature = "metal")]
         "metal" => GpuBackend::Metal(khal::backend::metal::Metal::new()?),
         #[cfg(feature = "webgpu")]
@@ -116,14 +106,36 @@ async fn run() -> Result<()> {
         "cuda" => GpuBackend::Cuda(khal::backend::Cuda::new(0)?),
         #[cfg(feature = "cpu")]
         "cpu" => GpuBackend::Cpu,
-        _ => bail!(
-            "this Nexus build does not include requested backend {}",
-            job.backend
-        ),
+        _ => bail!("this Nexus build does not include requested backend {name}"),
+    })
+}
+/// `physmark-nexus --calibrate JOB.json OUT.json`: measures the buffer demand of a scene for
+/// `capacities.json` (see `tools/calibrate_nexus.py`). Never used by benchmark trials.
+async fn calibrate(job: &std::path::Path, out: &std::path::Path) -> Result<()> {
+    let job: Job = serde_json::from_slice(&std::fs::read(job)?)?;
+    job.validate()?;
+    let b = backend(&job.backend).await?;
+    let peaks = capacity::calibrate(&job, &b).await?;
+    std::fs::write(out, serde_json::to_vec_pretty(&peaks)?)?;
+    Ok(())
+}
+async fn run() -> Result<()> {
+    let args: Vec<_> = std::env::args_os().collect();
+    if args.len() == 4 && args[1] == "--calibrate" {
+        return calibrate(args[2].as_ref(), args[3].as_ref()).await;
+    }
+    let (job, path) = read_job()?;
+    let memory = (job.mode == "memory").then(|| MemorySampler::new(&job.backend));
+    let b = backend(&job.backend).await?;
+    // Fixed buffers sized for the whole run; MPM scenes have no rigid-body buffers.
+    let budget = if job.scene.mpm.is_some() {
+        Budget::calibration(&job)
+    } else {
+        Budget::fixed(&job)?
     };
     let start = Instant::now();
     let mut pipeline = NexusPipeline::default();
-    let (mut s, _) = state(&job, &b).await?;
+    let (mut s, _) = state(&job, &b, budget).await?;
     pipeline.preload_pipelines(
         &b,
         if job.scene.mpm.is_some() {
@@ -146,7 +158,7 @@ async fn run() -> Result<()> {
     if let Some(memory) = &memory {
         memory.sample("warmup");
     }
-    let (mut s, h) = state(&job, &b).await?;
+    let (mut s, h) = state(&job, &b, budget).await?;
     b.synchronize()?;
     if let Some(memory) = &memory {
         memory.sample("reset");
@@ -201,26 +213,10 @@ async fn run() -> Result<()> {
         } else {
             pipeline.simulate(&b, &mut s, None).await?;
         }
-        // Read actual per-step demand only in the untimed robotics capture.
-        // The ordinary auto-resize counters lag the GPU by a frame or two.
-        if job.mode == "capture" && job.scene.robot.is_some() {
+        // The untimed capture checks every step's demand against the fixed buffers.
+        if job.mode == "capture" && job.scene.mpm.is_none() {
+            let (pairs, contacts) = capacity::ensure_fits(&b, &s).await?;
             let rbd = s.rbd.as_ref().unwrap();
-            let pairs: Vec<u32> = b
-                .slow_read_vec(rbd.collision_pairs_len_gpu().buffer())
-                .await?;
-            let contacts: Vec<u32> = b
-                .slow_read_vec(rbd.multibodies().mb_cons_demand().buffer())
-                .await?;
-            let pairs = pairs[0];
-            let contacts = contacts[0];
-            anyhow::ensure!(
-                pairs <= rbd.collision_pairs_capacity(),
-                "collision-pair capacity exceeded"
-            );
-            anyhow::ensure!(
-                contacts <= rbd.mb_contact_constraints_capacity(),
-                "multibody contact capacity exceeded"
-            );
             capacity_samples.push(serde_json::json!({
                 "step":step,"collision_pairs":pairs,"contact_constraint_slots":contacts,
                 "collision_capacity":rbd.collision_pairs_capacity(),
@@ -275,6 +271,10 @@ async fn run() -> Result<()> {
     b.synchronize()?;
     let elapsed = start.elapsed().as_secs_f64();
     let memory = memory.map(|sampler| sampler.finish(job.steps));
+    // Outside the measured interval: the final step must have fit the fixed buffers.
+    if job.scene.mpm.is_none() {
+        capacity::ensure_fits(&b, &s).await?;
+    }
     let final_poses = poses(&job, &b, &s, &h).await?;
     let gpu_timing = if enabled {
         let evidence = serde_json::json!({"step_seconds":step_seconds,"pass_seconds":pass_totals});
@@ -308,7 +308,7 @@ async fn run() -> Result<()> {
         elapsed_seconds: elapsed,
         awake_count: job.scene.size * job.worlds,
         final_poses,
-        settings: serde_json::json!({"solver":"TGS soft", "solver_iterations":4,"precision":"f32","sleeping":false,"warmup_steps_effective":job.warmup.max(job.steps),"sleeping_implementation":"no sleeping in GPU rigid pipeline", "world_execution":"native_batch","graph_capture":false,"collision_capacity":(job.scene.size*32).max(128)}),
+        settings: serde_json::json!({"solver":"TGS soft", "solver_iterations":4,"precision":"f32","sleeping":false,"warmup_steps_effective":job.warmup.max(job.steps),"sleeping_implementation":"no sleeping in GPU rigid pipeline", "world_execution":"native_batch","graph_capture":false,"capacities":budget.settings()}),
         frames,
         gpu_timing,
         memory,
@@ -332,7 +332,6 @@ async fn run() -> Result<()> {
         let (substep_refresh, substep_refresh_light) = s.rbd_substep_refresh();
         result.settings["solver_iterations"] = serde_json::json!(rbd.num_solver_iterations());
         result.settings["substeps"] = serde_json::json!(rbd.num_solver_iterations());
-        result.settings["collision_capacity"] = serde_json::json!(ROBOT_COLLISION_CAPACITY);
         result.settings["robot"] = serde_json::json!({
             "model":robot.model,"source_commit":robot.source_commit,
             "initial_keyframe":robot.initial_keyframe,"target_keyframe":robot.target_keyframe,
@@ -341,12 +340,8 @@ async fn run() -> Result<()> {
             "implicit_coriolis":s.rbd_implicit_coriolis(),
             "substep_refresh":substep_refresh,"substep_refresh_light":substep_refresh_light,
             "friction_in_bias_pass":params.friction_in_bias_pass != 0,
-            "contact_capacity_requested_per_environment":ROBOT_CONTACT_CAPACITY,
             "collision_capacity_total":rbd.collision_pairs_capacity(),
-            "contact_capacity_total":rbd.mb_contact_constraints_capacity(),
-            "last_observed_collision_pairs":rbd.collision_pairs_len(),
-            "last_observed_contact_constraints":rbd.mb_contact_constraints_len(),
-            "capacity_resize_policy":"grow"
+            "contact_capacity_total":rbd.mb_contact_constraints_capacity()
         });
     }
     std::fs::write(path, serde_json::to_vec_pretty(&result)?)?;
