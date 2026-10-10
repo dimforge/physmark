@@ -65,8 +65,14 @@ pub async fn state(job: &Job, backend: &GpuBackend) -> Result<NexusState> {
     // Building the rigid coupling in finalize enables CPIC in this engine pin.
     // Select analytic grid collisions only after the coupling has been built.
     state.set_mpm_use_cpic(false);
-    anyhow::ensure!(!state.mpm_use_cpic(), "MPM collision mode was not applied");
+    ensure_cpic_disabled(&state)?;
     Ok(state)
+}
+/// Fails if CPIC rigid coupling is enabled; it is a different collision scheme than the
+/// analytic grid boundaries used by every other engine.
+pub fn ensure_cpic_disabled(state: &NexusState) -> Result<()> {
+    anyhow::ensure!(!state.mpm_use_cpic(), "Nexus MPM CPIC must stay disabled");
+    Ok(())
 }
 pub fn settings(cfg: &MpmConfig) -> serde_json::Value {
     serde_json::json!({"solver":"Nexus MLS-MPM", "material":cfg.material, "mpm":cfg,

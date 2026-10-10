@@ -13,7 +13,7 @@ import time
 ROOT = Path(__file__).resolve().parents[1]
 PARTS = [
     ("rigid", "Rigid-body scale", "full-mac-rigid.toml", "Eight scenes at 8, 128, 1,024 and 10,000 bodies; one environment."),
-    ("mpm", "Material points", "full-mac-mpm.toml", "Elastic, sand and liquid at 512, 4,096 and 32,768 particles; one environment."),
+    ("mpm", "Material points", "full-mac-mpm.toml", "Elastic, sand and liquid from 512 to 195,112 particles (8³ to 58³); one environment; CPIC disabled."),
     ("stacks", "Brick structures", "full-mac-stacks.toml", "Brick ring and pyramid walls smashed by rolling spheres at 1,000, 10,000 and 28,000 bodies; one environment."),
     ("stacks-large", "Large brick structures", "full-mac-stacks-large.toml", "The Nexus 110K brick ring and 500K pyramids, each also at the other's scale; no replay capture."),
     ("environments", "Brick structure environments", "full-mac-environments.toml", "128- and 466-body brick rings and pyramids across 1, 4, 16, 64, 256, 1,024 and 4,096 environments."),

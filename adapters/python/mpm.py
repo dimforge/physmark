@@ -57,6 +57,7 @@ class GenesisMPM:
         self.entity = self.scene.add_entity(gs.morphs.Nowhere(n_particles=job["scene"]["size"]),
             material=material, surface=gs.surfaces.Default())
         self.scene.build()  # One actual environment, no batched axis.
+        self.ensure_cpic_disabled()
         points = [b for b in job["scene"]["bodies"] if b["dynamic"]]
         self.entity.set_particles_pos(np.array([b["position"] for b in points], dtype=np.float32))
         self.entity.set_particles_vel(np.array([b["velocity"] for b in points], dtype=np.float32))
@@ -67,15 +68,23 @@ class GenesisMPM:
             raise ValueError("Genesis did not preserve the canonical particle positions")
         if self.awake() != len(points):
             raise ValueError("Genesis did not activate every material point")
-        expected_mass = sum(b["mass"] for b in points)
-        if not np.allclose(self.entity.get_mass().cpu().numpy(), expected_mass, rtol=1e-5):
+        # Per particle: the f32 total from get_mass() drifts beyond 1e-5 near 200K particles.
+        solver = self.scene.sim.mpm_solver
+        start = self.entity._particle_start
+        masses = solver.particles_info.mass.to_numpy()[start:start + len(points)] / solver._particle_volume_scale
+        if not np.allclose(masses, [b["mass"] for b in points], rtol=1e-5):
             raise ValueError("Genesis particle mass does not match the shared scene")
         self.settings = {**common_settings(job), "solver": "Genesis MLS-MPM", "constitutive_law": law,
-                        "grid": "bounded dense with active-node tracking", "transfer": "APIC",
+                        "grid": "bounded dense with active-node tracking", "transfer": "APIC", "cpic": False,
                         "genesis_version": gs.__version__, "actual_backend": str(gs.backend),
                         "mpm_options": self.scene.options.mpm.model_dump(mode="json"),
                         "material_options": material.model_dump(mode="json"),
                         "particle_initialization": "Nowhere reservation, explicit positions/velocity/activation"}
+
+    def ensure_cpic_disabled(self):
+        # CPIC is a different rigid-coupling scheme than the analytic boundaries of the other engines.
+        if self.scene.sim.mpm_solver.enable_CPIC:
+            raise RuntimeError("Genesis MPM CPIC must stay disabled")
 
     def reset(self):
         self.scene.reset(self.initial)

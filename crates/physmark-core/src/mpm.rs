@@ -86,7 +86,7 @@ pub fn scene(name: &str, size: usize, seed: u64, dt: f64) -> Result<Scene> {
     let n = (size as f64).cbrt().round() as usize;
     ensure!(
         n >= 4 && n.is_multiple_of(2) && n.pow(3) == size,
-        "MPM size must be an even cube (64, 512, 4096, 32768, ...)"
+        "MPM size must be an even cube (64, 512, 4096, 32768, ..., 195112)"
     );
     let spacing = 0.4 / n as f64;
     let material = match name {
@@ -192,6 +192,12 @@ mod tests {
                     && p.position[1].abs() < 0.6
                     && p.position[2] > 0.));
             }
+        }
+        // The largest suite scale, 58³ particles, keeps the same volume and passes the CFL guard.
+        for name in ["mpm_elastic_drop", "mpm_sand_collapse", "mpm_dam_break"] {
+            let s = scene(name, 195_112, 42, 1. / 240.).unwrap();
+            let mass: f64 = s.bodies.iter().filter(|b| b.dynamic).map(|b| b.mass).sum();
+            assert!((mass - 64.).abs() < 1e-6);
         }
         assert!(scene("mpm_sand_collapse", 100, 42, 1. / 240.).is_err());
         assert!(scene("mpm_sand_collapse", 512, 42, 1.).is_err());

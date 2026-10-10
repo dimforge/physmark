@@ -320,6 +320,8 @@ async fn run() -> Result<()> {
         )?;
     }
     if let Some(config) = &job.scene.mpm {
+        // The rollout must not have rebuilt the rigid coupling, which re-enables CPIC.
+        mpm::ensure_cpic_disabled(&s)?;
         result.settings = mpm::settings(config);
         result.settings["warmup_steps_effective"] = serde_json::json!(job.warmup.max(job.steps));
         result.awake_count = s.mpm.as_ref().unwrap().particles.len();
