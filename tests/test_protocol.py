@@ -4,9 +4,11 @@ import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "adapters/python"))
+sys.path.insert(0, str(ROOT / "adapters/common"))
+sys.path.insert(0, str(ROOT / "adapters/mujoco"))
 sys.path.insert(0, str(ROOT / "tools"))
-from adapter import mjcf, Mujoco
+from physmark_adapter import mjcf
+from mujoco_adapter import Mujoco
 from report import summarize, leaderboard
 
 

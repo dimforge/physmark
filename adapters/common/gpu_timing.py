@@ -4,7 +4,6 @@ Chrome trace timestamps/durations are microseconds (displayTimeUnit is cosmetic)
 Never use host events, host profiler totals, or wall time as GPU measurements.
 """
 
-import gzip
 import json
 import math
 from pathlib import Path
@@ -110,83 +109,14 @@ def trace_device_time(trace, kind, device=0):
 
 
 def profile(sim, job, directory):
-    steps = job["steps"]
-    directory = Path(directory)
-    if job["engine"] == "newton":
-        import warp as wp
-
-        with wp.ScopedTimer(
-            "physmark GPU replay",
-            print=False,
-            cuda_filter=wp.TIMING_ALL,
-            synchronize=True,
-        ) as timer:
-            sim.advance(steps)
-            sim.sync()
-        samples = [
-            dict(name=r.name, milliseconds=r.elapsed, activity=r.filter)
-            for r in timer.timing_results
-            if r.device == sim.device
-        ]
-        (directory / "gpu-samples.json").write_text(
-            json.dumps(samples, allow_nan=False)
-        )
-        if not samples:
-            return unavailable("Warp returned no device activity timestamps")
-        if any(
-            not math.isfinite(r["milliseconds"]) or r["milliseconds"] < 0
-            for r in samples
-        ):
-            raise ValueError("invalid Warp CUDA event duration")
-        # ScopedTimer.elapsed is a HOST time; only TimingResult.elapsed uses CUDA events.
-        return available(
-            sum(r["milliseconds"] for r in samples) / 1000,
-            "warp_cuda_events",
-            "sum_warp_activity_durations",
-            steps,
-            len(samples),
-            evidence="gpu-samples.json",
-            replay="separate process",
-            includes="Warp kernels, builtins, copies and memsets; sums may overlap across streams",
-        )
-    if job["engine"] == "genesis":
-        import torch
-
-        if (
-            torch.profiler.ProfilerActivity.CUDA
-            not in torch.profiler.supported_activities()
-        ):
-            return unavailable(
-                "PyTorch profiler has no CUDA activity collector (CUPTI required)"
-            )
-        path = directory / "gpu-trace.json"
-        with torch.profiler.profile(
-            activities=[
-                torch.profiler.ProfilerActivity.CPU,
-                torch.profiler.ProfilerActivity.CUDA,
-            ]
-        ) as profiler:
-            sim.advance(steps)
-            sim.sync()
-        profiler.export_chrome_trace(str(path))
-        trace = json.loads(path.read_text())
-        kind, method = "kineto", "pytorch_cupti_activity"
-    elif job["engine"] == "mjx":
-        import jax
-
-        trace_dir = directory / "gpu-trace"
-        with jax.profiler.trace(str(trace_dir)):
-            sim.advance(steps)
-            sim.sync()
-        paths = list(trace_dir.rglob("*.trace.json.gz"))
-        if len(paths) != 1:
-            return unavailable(f"Expected one XLA device trace, found {len(paths)}")
-        path = paths[0]
-        with gzip.open(path, "rt") as f:
-            trace = json.load(f)
-        kind, method = "xla", "jax_cupti_activity"
-    else:
+    """Runs the engine's own device profiler (`sim.gpu_profile`) over `job["steps"]`."""
+    if not hasattr(sim, "gpu_profile"):
         raise ValueError("no GPU profiler implementation")
+    return sim.gpu_profile(job, Path(directory))
+
+
+def trace_profile(job, directory, trace, kind, method, path):
+    """Device time from a Chrome trace recorded around the measured steps."""
     result = trace_device_time(trace, kind)
     if result is None:
         return unavailable(
@@ -197,9 +127,25 @@ def profile(sim, job, directory):
         seconds,
         method,
         "device_activity_union",
-        steps,
+        job["steps"],
         count,
         evidence=str(path.relative_to(directory)),
         replay="separate process",
         includes="union of GPU kernel/copy/memset intervals on device 0; queue gaps excluded",
     )
+
+
+def torch_cupti_profile(sim, job, directory):
+    """Every CUDA kernel/copy/memset in the process, through the PyTorch CUPTI collector."""
+    import torch
+
+    if torch.profiler.ProfilerActivity.CUDA not in torch.profiler.supported_activities():
+        return unavailable("PyTorch profiler has no CUDA activity collector (CUPTI required)")
+    path = directory / "gpu-trace.json"
+    activities = [torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA]
+    with torch.profiler.profile(activities=activities) as profiler:
+        sim.advance(job["steps"])
+        sim.sync()
+    profiler.export_chrome_trace(str(path))
+    trace = json.loads(path.read_text())
+    return trace_profile(job, directory, trace, "kineto", "pytorch_cupti_activity", path)

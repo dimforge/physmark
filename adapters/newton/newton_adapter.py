@@ -1,0 +1,144 @@
+#!/usr/bin/env python3
+"""Newton with SolverMuJoCo (MuJoCo Warp) for rigid bodies and SolverImplicitMPM for MPM."""
+from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "common"))
+from physmark_adapter import initial_velocities, main, mjcf  # noqa: E402
+
+
+class Newton:
+    def __init__(self, job, xml):
+        import newton
+        import warp as wp
+
+        self.n, self.wp, self.job = newton, wp, job
+        wp.init()
+        wp.config.quiet = True
+        device = "cpu" if job["backend"] == "cpu" else "cuda:0"
+        if job["backend"] not in ("cpu", "cuda"):
+            raise ValueError("Newton supports CPU or CUDA, not Metal")
+        self.device = wp.get_device(device)
+        with wp.ScopedDevice(self.device):
+            single = newton.ModelBuilder(up_axis=newton.Axis.Z)
+            single.add_mjcf(
+                xml, ignore_inertial_definitions=False, collapse_fixed_joints=False
+            )
+            builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+            for i in range(job["worlds"]):
+                builder.add_world(single, label_prefix=f"env{i}")
+            self.model = builder.finalize(device=self.device)
+            self.solver = newton.solvers.SolverMuJoCo(
+                self.model,
+                use_mujoco_cpu=False,
+                use_mujoco_contacts=True,
+                enable_sleeping=False,
+                integrator="euler",
+                solver="newton",
+                iterations=50,
+                nconmax=max(64, job["scene"]["size"] * 32),
+                njmax=max(128, job["scene"]["size"] * 128),
+            )
+            if self.solver.use_mujoco_cpu:
+                raise RuntimeError("Newton unexpectedly selected native MuJoCo")
+            self.state0, self.state1 = self.model.state(), self.model.state()
+            newton.eval_fk(
+                self.model, self.model.joint_q, self.model.joint_qd, self.state0
+            )
+        names = self.model.body_label
+        self.ids = []
+        for env in range(job["worlds"]):
+            for body in job["scene"]["bodies"]:
+                if body["dynamic"]:
+                    wanted = f"env{env}/body_{body['id']}"
+                    matches = [
+                        i
+                        for i, name in enumerate(names)
+                        if name.startswith(f"env{env}/")
+                        and name.endswith(f"/body_{body['id']}")
+                    ]
+                    if len(matches) != 1:
+                        raise ValueError(f"could not map Newton body {wanted}: {names}")
+                    self.ids.append(matches[0])
+        with wp.ScopedDevice(self.device):
+            moving = initial_velocities(job["scene"])
+            if moving:
+                # Body twists are (COM velocity, angular velocity), both in world frame.
+                index = {b["id"]: k for k, b in enumerate(b for b in job["scene"]["bodies"] if b["dynamic"])}
+                per_world = len(index)
+                qd = self.state0.body_qd.numpy()
+                for env in range(job["worlds"]):
+                    for b, v, w in moving:
+                        qd[self.ids[env * per_world + index[b["id"]]]] = [*v, *w]
+                self.state0.body_qd.assign(qd)
+                newton.eval_ik(self.model, self.state0, self.state0.joint_q, self.state0.joint_qd)
+                newton.eval_fk(self.model, self.state0.joint_q, self.state0.joint_qd, self.state0)
+            self.initial_q = self.state0.body_q.numpy().copy()
+            self.initial_qd = self.state0.body_qd.numpy().copy()
+            self.initial_jq = self.state0.joint_q.numpy().copy()
+            self.initial_jqd = self.state0.joint_qd.numpy().copy()
+            self.control = self.model.control()
+        self.settings = {
+            "solver": "SolverMuJoCo",
+            "use_mujoco_cpu": False,
+            "collision_pipeline": "mujoco",
+            "iterations": 50,
+            "integrator": "Euler",
+            "sleeping": False,
+            "precision": "f32",
+            "world_execution": "native_batch",
+            "graph_capture": False,
+            "newton_version": newton.__version__,
+            "warp_version": wp.__version__,
+            "device": str(self.device),
+        }
+
+    def reset(self):
+        self.solver.reset(self.state0)
+        for s in (self.state0, self.state1):
+            s.body_q.assign(self.initial_q)
+            s.body_qd.assign(self.initial_qd)
+            s.joint_q.assign(self.initial_jq)
+            s.joint_qd.assign(self.initial_jqd)
+
+    def advance(self, steps):
+        with self.wp.ScopedDevice(self.device):
+            for _ in range(steps):
+                self.state0.clear_forces()
+                self.solver.step(
+                    self.state0,
+                    self.state1,
+                    self.control,
+                    None,
+                    self.job["scene"]["dt"],
+                )
+                self.state0, self.state1 = self.state1, self.state0
+
+    def sync(self):
+        self.wp.synchronize_device(self.device)
+
+    def poses(self):
+        data = self.state0.body_q.numpy()
+        return data[self.ids].tolist()
+
+    def awake(self):
+        if self.solver.enable_sleeping:
+            raise RuntimeError("Newton sleeping unexpectedly enabled")
+        return len(self.ids)
+
+    def gpu_profile(self, job, directory):
+        from warp_timing import warp_profile
+
+        return warp_profile(self, job, directory)
+
+
+def make(job):
+    if job["scene"].get("mpm"):
+        from newton_mpm import NewtonMPM
+
+        return NewtonMPM(job)
+    return Newton(job, mjcf(job["scene"]))
+
+
+if __name__ == "__main__":
+    main(make)

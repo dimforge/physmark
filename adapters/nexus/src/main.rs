@@ -1,5 +1,5 @@
 use nexus3d::rapier as engine;
-include!("../../common_rust.rs");
+include!("../../common/common_rust.rs");
 use anyhow::{Result, bail};
 use khal::backend::{Backend, GpuBackend, GpuTimestamps};
 use nexus3d::prelude::*;

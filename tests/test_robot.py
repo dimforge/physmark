@@ -7,9 +7,11 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
-sys.path.insert(0, str(ROOT / 'adapters/python'))
+sys.path.insert(0, str(ROOT / 'adapters/common'))
+sys.path.insert(0, str(ROOT / 'adapters/mujoco'))
 from robot_scene import make_scene
-from adapter import Mujoco, mjcf
+from physmark_adapter import mjcf
+from mujoco_adapter import Mujoco
 from report import geometry, count_unit
 
 

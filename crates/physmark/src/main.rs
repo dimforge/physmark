@@ -311,7 +311,7 @@ fn adapter_command(root: &Path, engine: &str) -> Command {
         )))
     } else {
         let mut c = Command::new(python(root));
-        c.arg(root.join("adapters/python/adapter.py"));
+        c.arg(root.join(format!("adapters/{engine}/{engine}_adapter.py")));
         c
     }
 }

@@ -1,5 +1,5 @@
 use rapier3d as engine;
-include!("../../common_rust.rs");
+include!("../../common/common_rust.rs");
 use anyhow::{Result, ensure};
 use physmark_core::memory::MemorySampler;
 use physmark_core::{AdapterResult, Frame, read_job};

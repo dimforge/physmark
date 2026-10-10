@@ -146,7 +146,9 @@ cargo clippy --workspace --all-targets -- -D warnings
 .physmark/envs/python/bin/python -m pytest tests
 ```
 
-The subprocess protocol and deterministic scene generator live in `crates/physmark-core`; orchestration is in `crates/physmark`; the small Python layer calls the Python-first engines and renders results. Python does not orchestrate benchmark scheduling or sit between the controller and a native engine's timed step loop.
+The subprocess protocol and deterministic scene generator live in `crates/physmark-core`; orchestration is in `crates/physmark`; the small Python layer calls the Python-first engines and renders results.
+
+Every engine has its own adapter directory, `adapters/<engine>`: `rapier` and `nexus` are Cargo crates (`physmark-<engine>`); the Python engines have an `<engine>_adapter.py` entry point next to any engine-specific modules (`genesis_mpm.py`, `newton_mpm.py`, Newton's `warp_timing.py`). `adapters/common` holds what they share: `common_rust.rs` (scene construction for both Rapier-based crates), `physmark_adapter.py` (scene-to-MJCF translation, initial velocities and the timed loop), `gpu_timing.py`, `memory_usage.py` and `mpm_common.py`. MJX reuses the MuJoCo adapter's model setup. Python does not orchestrate benchmark scheduling or sit between the controller and a native engine's timed step loop.
 
 
 ### Robotics
