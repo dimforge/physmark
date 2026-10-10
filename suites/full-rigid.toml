@@ -1,4 +1,4 @@
-name = "Full Mac rigid-body suite"
+name = "Full rigid-body suite"
 engines = ["rapier", "mujoco", "nexus", "genesis"]
 scenarios = ["free_fall", "box_pile", "sphere_pile", "mixed_pile", "stacks", "dominoes", "pendulums", "friction_ramp"]
 sizes = [8, 128, 1024, 10000]

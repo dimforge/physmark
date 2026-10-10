@@ -410,11 +410,11 @@ impl GpuProbe {
     fn bytes(&self) -> Result<(u64, u64)> {
         let bytes = match self {
             #[cfg(target_os = "macos")]
-            Self::Metal(device) => device.bytes(),
+            Self::Metal(device) => Ok(device.bytes()),
             #[cfg(target_os = "linux")]
-            Self::Nvml(nvml) => nvml.bytes()?,
-            Self::Unavailable => anyhow::bail!("no GPU counter"),
-        };
+            Self::Nvml(nvml) => nvml.bytes(),
+            Self::Unavailable => Err(anyhow::anyhow!("no GPU counter")),
+        }?;
         Ok((bytes, bytes))
     }
 }

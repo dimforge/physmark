@@ -168,15 +168,19 @@ All 13 links must remain present and awake. Failing robots are excluded from tim
 rankings. The initial positions are checked against MuJoCo forward kinematics.
 Sleeping remains disabled in every engine.
 
-### Full Mac round resource policy
+### Full round resource policy
 
-`tools/full_mac.py` runs all parts serially, with Rapier parallelism enabled and
-8 workers requested. MPM runs only on Nexus/Genesis Metal; Newton/MJX are omitted
-from this round. CPU subprocesses are limited to 120 seconds including setup,
-warmup and rollout; GPU budgets are declared in each preset. A 72 GiB physical
-footprint cap limits each adapter. `skip_after_resource_limit` records subsequent
-identical/larger environment batches as skipped after a timeout or memory-cap
-error. Accuracy-gate failures remain distinct from resource failures.
+`cargo run --release -- round` (`tools/full_round.py`) runs all parts serially, with
+Rapier parallelism enabled and up to 8 workers requested. Backends follow the
+detected hardware (see the README); Newton, MJX and Isaac Sim run only on CUDA, and
+engines that fail a two-step probe trial are skipped and listed, never substituted.
+The plan, including probe outcomes, is saved in `round-plan.json` and reused on
+`--resume` so resumed suites keep their backends. CPU subprocesses are limited to
+120 seconds including setup, warmup and rollout; GPU budgets are declared in each
+preset. On macOS, a physical-footprint cap of 56% of RAM (72 GiB on 128 GiB) limits
+each adapter. `skip_after_resource_limit` records subsequent identical/larger
+environment batches as skipped after a timeout or memory-cap error. Accuracy-gate
+failures remain distinct from resource failures.
 
 Liquid MPM boundary friction is 0.01, the minimum accepted by Genesis's rigid
 boundary material, and is shared by all MPM adapters. Liquid viscosity remains zero.

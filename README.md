@@ -136,7 +136,7 @@ The MPM report uses Genesis as its declared baseline, labels particle counts and
 
 ## NVIDIA machines
 
-The Python adapters accept `--backend genesis=cuda,newton=cuda,mjx=cuda`; Nexus accepts CUDA when built with `PHYSMARK_NEXUS_FEATURES=cuda`. These paths are wired but require validation on NVIDIA hardware. The checked dependency lock was resolved on macOS arm64; a Linux CUDA environment requires compatible CUDA-enabled Torch/Warp/JAX packages and a reviewed platform lock. The build helper accepts `PHYSMARK_NEXUS_FEATURES=webgpu` as well. Linux CUDA memory collection uses NVML per-process counters when the driver exposes them, with explicit unavailable status otherwise. This Mac cannot validate CUDA execution or NVML hardware counters.
+`cargo run --release -- round results/full` selects the CUDA backends automatically. The Python adapters accept `--backend genesis=cuda,newton=cuda,mjx=cuda`; Nexus accepts CUDA when built with `PHYSMARK_NEXUS_FEATURES=cuda`. These paths are wired but require validation on NVIDIA hardware. The checked dependency lock was resolved on macOS arm64; a Linux CUDA environment requires compatible CUDA-enabled Torch/Warp/JAX packages and a reviewed platform lock. The build helper accepts `PHYSMARK_NEXUS_FEATURES=webgpu` as well. Linux CUDA memory collection uses NVML per-process counters when the driver exposes them, with explicit unavailable status otherwise. This Mac cannot validate CUDA execution or NVML hardware counters.
 
 ## Isaac Sim
 
@@ -190,23 +190,46 @@ cargo run --release -- run --suite suites/robot.toml --threads 8
 `robot.toml` scales both robots from one to 4,096 independent environments, with
 one robot per environment. Invalid stand-up runs remain visible but unranked.
 
-Run the complete Mac round, including rigid sizes, brick structures up to 500K
-bodies, MPM, brick-structure environment scaling and robot environment scaling,
-with eight Rapier workers:
+## Full round, any machine
+
+One command runs the complete round (rigid sizes, brick structures up to 500K
+bodies, MPM, brick-structure environment scaling and robot environment scaling)
+on macOS, Linux or Windows, and writes a landing page linking the six reports:
 
 ```sh
-.physmark/envs/python/bin/python tools/full_mac.py results/full-mac
+cargo run --release -- round results/full
 ```
 
-This command assumes the release controller and selected engines have been built.
-It automatically generates plots, scene previews, replay videos (except for the
-110K/500K brick structures, which are not captured) and the six reports, with a shared landing page at `results/full-mac/index.html`.
-Use `--resume` with the same output to
-continue an interrupted round. CPU subprocesses have a 120-second budget;
-subprocesses exceeding a resource limit cause remaining identical/larger
-environment counts of that engine/scene/size to be recorded as skipped. The
-110K/500K brick structures use a 600-second CPU budget.
+It needs the Quick start prerequisites, nothing else: it fetches and builds what it
+uses. It detects the hardware and picks one backend per engine:
 
-For a resumed full Mac round, optional `skip-cases.json` in the output directory maps
+| Engine | Apple (Metal) | NVIDIA (CUDA) | Neither |
+| --- | --- | --- | --- |
+| Rapier, MuJoCo | CPU | CPU | CPU |
+| Nexus | Metal | CUDA | WebGPU (Vulkan/DX12) |
+| Genesis | Metal | CUDA | CPU |
+| Newton, MJX | skipped | CUDA | skipped |
+| Isaac Sim | skipped | CUDA (Linux/Windows, EULA accepted) | skipped |
+
+CUDA means an NVIDIA GPU visible to `nvidia-smi`. Newton and MJX run only on CUDA:
+their CPU paths are too slow for a full round. Isaac Sim also needs you to accept
+its EULA yourself (`export OMNI_KIT_ACCEPT_EULA=YES`); otherwise it is skipped.
+On CUDA machines the build adds the JAX CUDA 13 plugin matching the locked JAX, and
+builds Nexus with its `cuda` feature. After building, each selected engine runs a
+two-step probe trial on its backend; any engine that fails (missing driver, broken
+plugin) is dropped. Skipped engines are never replaced by another backend: they and
+their reasons are listed on the landing page and in `round-plan.json`.
+
+Plots, scene previews and replay videos are generated for every part, except the
+110K/500K brick structures, which are not captured. Use `--resume` with the same
+output to continue an interrupted round with its recorded plan; `--threads N` sets
+the CPU workers (default: up to 8) and `--skip-build` reuses the current build.
+CPU subprocesses have a 120-second budget (600 seconds for the 110K/500K brick
+structures); a subprocess exceeding a resource limit causes remaining
+identical/larger environment counts of that engine/scene/size to be recorded as
+skipped. On macOS each adapter is also capped at 56% of physical memory (72 GiB on
+a 128 GiB machine), or `PHYSMARK_MEMORY_LIMIT_GIB` if set.
+
+For a resumed round, optional `skip-cases.json` in the output directory maps
 `engine:scenario:size:worlds` to an explicit reason. These exclusions are passed to
 the controller and recorded in its resume history and trial outcomes.

@@ -21,6 +21,8 @@ struct Cli {
     command: Action,
 }
 #[derive(Subcommand)]
+// Parsed once per invocation; Windows paths make `Run` larger than the other variants.
+#[allow(clippy::large_enum_variant)]
 enum Action {
     /// Fetch exact commits from engines.lock into the private source cache.
     Fetch,
@@ -80,6 +82,20 @@ enum Action {
         timeout: Option<u64>,
         #[arg(short, long)]
         output: Option<PathBuf>,
+    },
+    /// Run the complete benchmark round on this machine: detect Metal/CUDA/Isaac support, build
+    /// what can run, probe every engine/backend, run all suites and index their reports.
+    Round {
+        output: PathBuf,
+        /// Continue an interrupted round with its recorded plan.
+        #[arg(long)]
+        resume: bool,
+        /// CPU workers per trial (default: up to 8).
+        #[arg(long)]
+        threads: Option<usize>,
+        /// Use the engines already built.
+        #[arg(long)]
+        skip_build: bool,
     },
     /// Regenerate offline HTML, performance curves, screenshots and videos.
     Report {
@@ -272,12 +288,31 @@ fn stamp(root: &Path) -> Result<String> {
     }
     Ok(hash(&out))
 }
+/// The interpreter of a virtual environment under `.physmark/envs`.
+fn venv_python(root: &Path, name: &str) -> PathBuf {
+    let env = root.join(".physmark/envs").join(name);
+    if cfg!(windows) {
+        env.join("Scripts/python.exe")
+    } else {
+        env.join("bin/python")
+    }
+}
 fn python(root: &Path) -> PathBuf {
-    root.join(".physmark/envs/python/bin/python")
+    venv_python(root, "python")
 }
 /// Isaac Sim pins its own Python packages, so it gets a separate environment.
 fn isaac_python(root: &Path) -> PathBuf {
-    root.join(".physmark/envs/isaac/bin/python")
+    venv_python(root, "isaac")
+}
+/// The system interpreter running the build and round helpers (standard library only).
+fn system_python() -> &'static str {
+    if cfg!(windows) { "python" } else { "python3" }
+}
+fn native_adapter(root: &Path, engine: &str) -> PathBuf {
+    root.join(format!(
+        "adapters/{engine}/target/release/physmark-{engine}{}",
+        std::env::consts::EXE_SUFFIX
+    ))
 }
 fn load_scene(
     root: &Path,
@@ -311,9 +346,7 @@ fn load_scene(
 }
 fn adapter_command(root: &Path, engine: &str) -> Command {
     if ["rapier", "nexus"].contains(&engine) {
-        Command::new(root.join(format!(
-            "adapters/{engine}/target/release/physmark-{engine}"
-        )))
+        Command::new(native_adapter(root, engine))
     } else {
         let mut c = Command::new(if engine == "isaac" {
             isaac_python(root)
@@ -940,7 +973,7 @@ fn main() -> Result<()> {
         }
         Action::Build { engines } => {
             fetch(&root)?;
-            let status = Command::new("python3")
+            let status = Command::new(system_python())
                 .arg(root.join("tools/build.py"))
                 .arg("--engines")
                 .arg(engines)
@@ -954,7 +987,7 @@ fn main() -> Result<()> {
             println!("Source check: {:?}", verify_sources(&root));
             for e in ENGINES {
                 let p = if ["rapier", "nexus"].contains(e) {
-                    root.join(format!("adapters/{e}/target/release/physmark-{e}"))
+                    native_adapter(&root, e)
                 } else if *e == "isaac" {
                     isaac_python(&root)
                 } else {
@@ -1042,6 +1075,29 @@ fn main() -> Result<()> {
             directory,
             no_video,
         } => report(&root, &directory, no_video),
+        Action::Round {
+            output,
+            resume,
+            threads,
+            skip_build,
+        } => {
+            let mut c = Command::new(system_python());
+            c.arg(root.join("tools/full_round.py"))
+                .arg(std::env::current_dir()?.join(output))
+                .current_dir(&root)
+                .env("PHYSMARK_BIN", std::env::current_exe()?);
+            if resume {
+                c.arg("--resume");
+            }
+            if let Some(threads) = threads {
+                c.arg("--threads").arg(threads.to_string());
+            }
+            if skip_build {
+                c.arg("--skip-build");
+            }
+            ensure!(c.status()?.success(), "full round failed");
+            Ok(())
+        }
     }
 }
 

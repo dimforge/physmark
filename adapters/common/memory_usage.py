@@ -8,11 +8,10 @@ import sys
 
 class MemorySampler:
     def __init__(self, backend):
-        suffix = "dylib" if sys.platform == "darwin" else "so"
-        path = (
-            Path(__file__).resolve().parents[2]
-            / f"target/release/libphysmark_core.{suffix}"
+        name = {"darwin": "libphysmark_core.dylib", "win32": "physmark_core.dll"}.get(
+            sys.platform, "libphysmark_core.so"
         )
+        path = Path(__file__).resolve().parents[2] / "target/release" / name
         self.lib = ct.CDLL(str(path))
         self.lib.physmark_memory_new.argtypes = [ct.c_char_p]
         self.lib.physmark_memory_new.restype = ct.c_void_p

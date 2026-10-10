@@ -14,11 +14,13 @@ import platform
 import shutil
 import subprocess
 
+from capabilities import isaac_wheels, nvidia_gpus
+
 ROOT = Path(__file__).resolve().parents[1]
 CACHE = ROOT / ".physmark"
 SOURCES = CACHE / "sources"
 BUILD = CACHE / "build"
-PY = CACHE / "envs/python/bin/python"
+PY = CACHE / ("envs/python/Scripts/python.exe" if platform.system() == "Windows" else "envs/python/bin/python")
 
 
 def run(*args, env=None):
@@ -31,8 +33,7 @@ def install(*args, env=None):
 
 
 def isaac_supported():
-    return platform.system() in ("Linux", "Windows") and platform.machine().lower() in (
-        "x86_64", "amd64", "aarch64", "arm64")
+    return isaac_wheels()
 
 
 def build_isaac():
@@ -43,7 +44,7 @@ def build_isaac():
     import tomllib
 
     pin = tomllib.loads((ROOT / "engines.lock").read_text())["engines"]["isaac"]
-    python = CACHE / "envs/isaac/bin/python"
+    python = CACHE / ("envs/isaac/Scripts/python.exe" if platform.system() == "Windows" else "envs/isaac/bin/python")
     if not python.exists():
         run("uv", "venv", "--python", "3.12", python.parent.parent)
     run("uv", "pip", "install", "--python", python, pin["distribution"],
@@ -82,6 +83,10 @@ def main():
             "cmake",
             "ninja",
         )
+    if "mjx" in engines and nvidia_gpus():
+        # The locked jaxlib is CPU-only; its CUDA 13 plugin matches the locked Torch's CUDA 13.
+        jax = next(l for l in (ROOT / "requirements.lock").read_text().splitlines() if l.startswith("jax=="))
+        install(jax.replace("jax==", "jax[cuda13]=="))
     if "rapier" in engines:
         run(
             "cargo",
