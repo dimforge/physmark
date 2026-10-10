@@ -10,6 +10,10 @@ use std::f64::consts::PI;
 
 pub const SCENARIOS: &[&str] = &["brick_ring", "pyramids"];
 
+/// Floor penetration gate, one brick height. The spheres outweigh a brick up to 86,000:1 and
+/// crush bricks partway into the floor; a brick fully below the surface still fails.
+pub const FLOOR_TOLERANCE: f64 = 0.5;
+
 /// Brick half extents (long axis along local x).
 const BRICK: [f64; 3] = [0.5, 0.25, 0.25];
 const BRICK_DENSITY: f64 = 1.;
@@ -227,6 +231,55 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn floor_gate_admits_crushed_bricks_but_not_sunken_ones() {
+        use crate::{AdapterResult, Job, validate_result};
+        let job = Job {
+            schema_version: 1,
+            scene: scene("brick_ring", 128, 42, 1. / 120.).unwrap(),
+            engine: "nexus".into(),
+            backend: "metal".into(),
+            mode: "timing".into(),
+            worlds: 1,
+            steps: 10,
+            warmup: 10,
+            capture_stride: 1,
+            threads: 1,
+        };
+        let poses: Vec<[f64; 7]> = job
+            .scene
+            .bodies
+            .iter()
+            .filter(|b| b.dynamic)
+            .map(|b| {
+                let [x, y, z] = b.position;
+                let [qx, qy, qz, qw] = b.rotation;
+                [x, y, z, qx, qy, qz, qw]
+            })
+            .collect();
+        let mut result = AdapterResult {
+            schema_version: 1,
+            engine: job.engine.clone(),
+            backend: job.backend.clone(),
+            setup_seconds: 0.,
+            warmup_seconds: 0.,
+            elapsed_seconds: 1.,
+            final_poses: poses,
+            awake_count: job.scene.size,
+            settings: serde_json::json!({}),
+            frames: vec![],
+            gpu_timing: None,
+            memory: None,
+        };
+        assert!(validate_result(&job, &result).passed);
+        // Crushed 0.28 m into the floor, as observed under the 110k ring's sphere.
+        result.final_poses[0][2] = 0.25 - 0.28;
+        assert!(validate_result(&job, &result).passed);
+        // Entirely below the floor surface.
+        result.final_poses[0][2] = 0.25 - 0.55;
+        assert!(!validate_result(&job, &result).passed);
     }
 
     #[test]

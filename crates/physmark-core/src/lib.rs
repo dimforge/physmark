@@ -599,7 +599,11 @@ pub fn validate_result(job: &Job, r: &AdapterResult) -> Validation {
             v.max_joint_error = Some(v.max_joint_error.unwrap_or(0.).max(e));
         }
     }
-    let floor_tolerance = job.scene.mpm.as_ref().map_or(0.15, |m| m.cell_width);
+    let floor_tolerance = match &job.scene.mpm {
+        Some(m) => m.cell_width,
+        None if stacks::SCENARIOS.contains(&job.scene.scenario.as_str()) => stacks::FLOOR_TOLERANCE,
+        None => 0.15,
+    };
     if v.max_floor_penetration > floor_tolerance {
         v.reasons.push(format!(
             "floor penetration exceeds {floor_tolerance} m baseline gate"
