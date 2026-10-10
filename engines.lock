@@ -7,7 +7,7 @@ adapter = "rust"
 
 [engines.nexus]
 repository = "https://github.com/dimforge/nexus.git"
-commit = "22688d610fc953f7af00078c6dcc53add561a996"
+commit = "2e0eab6d3ae52cc155ce59a21a38e2b2fac0447c"
 adapter = "rust"
 
 [engines.genesis]

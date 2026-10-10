@@ -13,17 +13,17 @@ cuda = ["nexus3d/cuda", "khal/cuda"]
 rapier3d-mjcf = { path = "../../.physmark/sources/rapier/crates/rapier3d-mjcf" }
 physmark-core = { path = "../../crates/physmark-core" }
 nexus3d = { path = "../../.physmark/sources/nexus/crates/nexus3d", default-features = false, features = ["dim3", "f32", "rbd", "mpm"] }
-khal = "0.3"
+khal = "0.4"
 anyhow = "1"
 serde_json = "1"
 pollster = "0.4"
 [patch.crates-io]
 rapier3d = { path = "../../.physmark/sources/rapier/crates/rapier3d" }
-khal = { git = "https://github.com/dimforge/khal", rev = "58b02f2379f3542dbf5269804c3f2dfcdfc4e0b4" }
-khal-derive = { git = "https://github.com/dimforge/khal", rev = "58b02f2379f3542dbf5269804c3f2dfcdfc4e0b4" }
-khal-std = { git = "https://github.com/dimforge/khal", rev = "58b02f2379f3542dbf5269804c3f2dfcdfc4e0b4" }
-khal-builder = { git = "https://github.com/dimforge/khal", rev = "58b02f2379f3542dbf5269804c3f2dfcdfc4e0b4" }
-vortx = { git = "https://github.com/dimforge/vortx", rev = "dae29b397e5635cbd5eb71bc599eb0a6d468387e" }
-vortx-shaders = { git = "https://github.com/dimforge/vortx", rev = "dae29b397e5635cbd5eb71bc599eb0a6d468387e" }
+khal = { git = "https://github.com/dimforge/khal", rev = "57ad7b6badd5bbdaa59462de282847abe8080912" }
+khal-derive = { git = "https://github.com/dimforge/khal", rev = "57ad7b6badd5bbdaa59462de282847abe8080912" }
+khal-std = { git = "https://github.com/dimforge/khal", rev = "57ad7b6badd5bbdaa59462de282847abe8080912" }
+khal-builder = { git = "https://github.com/dimforge/khal", rev = "57ad7b6badd5bbdaa59462de282847abe8080912" }
+vortx = { git = "https://github.com/dimforge/vortx", rev = "e7b9add21702a2656d7c39dbd848d33157e51b17" }
+vortx-shaders = { git = "https://github.com/dimforge/vortx", rev = "e7b9add21702a2656d7c39dbd848d33157e51b17" }
 [profile.release]
 lto = "thin"
