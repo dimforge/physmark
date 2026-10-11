@@ -10,6 +10,7 @@ from physmark_adapter import arena_cap_bytes, initial_velocities, is_arena_alloc
 class Newton:
     def __init__(self, job, xml):
         import newton
+        import numpy as np
         import warp as wp
 
         self.n, self.wp, self.job = newton, wp, job
@@ -19,10 +20,17 @@ class Newton:
         if job["backend"] not in ("cpu", "cuda"):
             raise ValueError("Newton supports CPU or CUDA, not Metal")
         self.device = wp.get_device(device)
+        robot = job["scene"].get("robot")
         with wp.ScopedDevice(self.device):
             single = newton.ModelBuilder(up_axis=newton.Axis.Z)
+            if robot:
+                # Robots keep the Menagerie model: its <option> (integrator, cone, impratio,
+                # iterations) becomes per-world solver settings, and its position actuators run
+                # natively from control.mujoco.ctrl, as in MuJoCo.
+                newton.solvers.SolverMuJoCo.register_custom_attributes(single)
             single.add_mjcf(
-                xml, ignore_inertial_definitions=False, collapse_fixed_joints=False
+                xml, ignore_inertial_definitions=False, collapse_fixed_joints=False,
+                **({"ctrl_direct": True} if robot else {}),
             )
             builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
             for i in range(job["worlds"]):
@@ -44,19 +52,37 @@ class Newton:
                     return compile_spec(spec, *args, **kwargs)
 
             mujoco.MjSpec.compile = compile_with_arena
+            if robot:
+                # MuJoCo Warp's automatic estimates (njmax and nconmax 64) overflow on the Go1 and
+                # drop constraints. Standing up peaks at 60 (Go1) and 103 (T1) constraint rows in
+                # MuJoCo; the narrowphase counts candidate contacts before filtering, which the
+                # Go1's leg capsules exceed at 64. Keep ample headroom per world.
+                options = dict(nconmax=512, njmax=256)
+            else:
+                options = dict(
+                    integrator="euler",
+                    solver="newton",
+                    iterations=50,
+                    nconmax=max(64, job["scene"]["size"] * 32),
+                    njmax=max(128, job["scene"]["size"] * 128),
+                )
             self.solver = newton.solvers.SolverMuJoCo(
                 self.model,
                 use_mujoco_cpu=False,
                 use_mujoco_contacts=True,
                 enable_sleeping=False,
-                integrator="euler",
-                solver="newton",
-                iterations=50,
-                nconmax=max(64, job["scene"]["size"] * 32),
-                njmax=max(128, job["scene"]["size"] * 128),
+                **options,
             )
             if self.solver.use_mujoco_cpu:
                 raise RuntimeError("Newton unexpectedly selected native MuJoCo")
+            if robot:
+                # MuJoCo qpos stores the free joint's quaternion as wxyz; Newton uses xyzw.
+                q = list(robot["qpos"])
+                q[3:7] = [q[4], q[5], q[6], q[3]]
+                per_world = self.model.joint_coord_count // job["worlds"]
+                if per_world != len(q):
+                    raise RuntimeError("Newton robot coordinates differ from the MuJoCo qpos")
+                self.model.joint_q.assign(np.tile(np.asarray(q, dtype=np.float32), job["worlds"]))
             self.state0, self.state1 = self.model.state(), self.model.state()
             newton.eval_fk(
                 self.model, self.model.joint_q, self.model.joint_qd, self.state0
@@ -66,12 +92,13 @@ class Newton:
         for env in range(job["worlds"]):
             for body in job["scene"]["bodies"]:
                 if body["dynamic"]:
-                    wanted = f"env{env}/body_{body['id']}"
+                    link = robot["body_names"][body["id"] - 1] if robot else f"body_{body['id']}"
+                    wanted = f"env{env}/{link}"
                     matches = [
                         i
                         for i, name in enumerate(names)
                         if name.startswith(f"env{env}/")
-                        and name.endswith(f"/body_{body['id']}")
+                        and name.endswith(f"/{link}")
                     ]
                     if len(matches) != 1:
                         raise ValueError(f"could not map Newton body {wanted}: {names}")
@@ -94,6 +121,8 @@ class Newton:
             self.initial_jq = self.state0.joint_q.numpy().copy()
             self.initial_jqd = self.state0.joint_qd.numpy().copy()
             self.control = self.model.control()
+            if robot:
+                self.control.mujoco.ctrl.assign(np.tile(np.asarray(robot["ctrl"], dtype=np.float32), job["worlds"]))
         self.settings = {
             "solver": "SolverMuJoCo",
             "use_mujoco_cpu": False,
@@ -108,6 +137,11 @@ class Newton:
             "warp_version": wp.__version__,
             "device": str(self.device),
         }
+        if robot:
+            self.settings.update(
+                iterations="MJCF <option>", integrator="MJCF <option>",
+                actuators="MJCF position actuators (control.mujoco.ctrl)",
+            )
 
     def reset(self):
         self.solver.reset(self.state0)

@@ -1,0 +1,22 @@
+# Robot variant of physmark.kit: the same physics-only experience plus the MJCF importer, whose
+# USD schemas must be registered when Kit starts.
+[package]
+title = "PhysMark Isaac Sim robots"
+version = "1.0.0"
+
+[dependencies]
+"omni.kit.loop-isaac" = {}
+"omni.kit.usd.layers" = {}
+"omni.physx" = {}
+"omni.physics.tensors" = {}
+"omni.physx.tensors" = {}
+"omni.usd" = {}
+"isaacsim.asset.importer.mjcf" = {}
+
+[settings.app]
+name = "PhysMark"
+version = "1.0.0"
+settings.persistent = false
+
+[settings.app.exts.folders]
+'++' = ["${kit}/../exts", "${kit}/../extscache", "${kit}/../extsDeprecated"]

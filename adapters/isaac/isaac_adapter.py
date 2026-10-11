@@ -2,7 +2,7 @@
 """Isaac Sim adapter: PhysX 5 rigid bodies built directly as a USD stage, read through the
 PhysX tensor API. Isaac Sim publishes Linux and Windows wheels only (NVIDIA GPU required).
 
-Rigid primitive scenes and world-anchored hinges only; robots and MPM are not wired.
+Rigid primitive scenes and world-anchored hinges here; MJCF robots in isaac_robot.py. MPM is not wired.
 Isaac Sim requires its EULA to be accepted by the user (OMNI_KIT_ACCEPT_EULA=YES).
 """
 from importlib import metadata
@@ -47,12 +47,7 @@ class Isaac:
     def __init__(self, job):
         scene = job["scene"]
         if scene.get("robot") or scene.get("mpm"):
-            raise ValueError("the Isaac adapter supports rigid primitive scenes only")
-        if job["backend"] not in ("cuda", "cpu"):
-            raise ValueError("Isaac Sim supports backend=cuda or backend=cpu")
-        if os.environ.get("OMNI_KIT_ACCEPT_EULA", "").upper() not in ("YES", "Y", "1", "TRUE"):
-            # Kit would otherwise wait for an interactive answer until the trial times out.
-            raise RuntimeError("accept the NVIDIA Isaac Sim EULA yourself first: export OMNI_KIT_ACCEPT_EULA=YES")
+            raise ValueError("the Isaac primitive adapter supports rigid primitive scenes only")
         self.job, self.gpu = job, job["backend"] == "cuda"
         from isaacsim import SimulationApp
 
@@ -290,5 +285,20 @@ class Isaac:
         return torch_cupti_profile(self, job, directory)
 
 
+def make(job):
+    if job["scene"].get("mpm"):
+        raise ValueError("Isaac Sim MPM is not wired")
+    if job["backend"] not in ("cuda", "cpu"):
+        raise ValueError("Isaac Sim supports backend=cuda or backend=cpu")
+    if os.environ.get("OMNI_KIT_ACCEPT_EULA", "").upper() not in ("YES", "Y", "1", "TRUE"):
+        # Kit would otherwise wait for an interactive answer until the trial times out.
+        raise RuntimeError("accept the NVIDIA Isaac Sim EULA yourself first: export OMNI_KIT_ACCEPT_EULA=YES")
+    if job["scene"].get("robot"):
+        from isaac_robot import IsaacRobot
+
+        return IsaacRobot(job)
+    return Isaac(job)
+
+
 if __name__ == "__main__":
-    main(Isaac)
+    main(make)

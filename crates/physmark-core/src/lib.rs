@@ -209,7 +209,7 @@ impl Job {
         ensure!(ENGINES.contains(&self.engine.as_str()), "unknown engine");
         if let Some(robot) = &self.scene.robot {
             ensure!(
-                ["rapier", "nexus", "genesis", "mujoco"].contains(&self.engine.as_str()),
+                ["rapier", "nexus", "genesis", "mujoco", "newton", "isaac"].contains(&self.engine.as_str()),
                 "robot MJCF adapter is not implemented for this engine"
             );
             ensure!(

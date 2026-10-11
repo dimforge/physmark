@@ -171,7 +171,18 @@ excludes self-contacts consistently across engines. Rendered links use the
 original collision primitives, with poses at MJCF link origins. The source model
 and resulting portable MJCF are recorded in each job. Rapier and Nexus use the
 pinned Rapier MJCF loader and reduced-coordinate multibody joints; MuJoCo and
-Genesis use their native MJCF loaders. Rapier and Nexus robots both run one substep
+Genesis use their native MJCF loaders. Newton imports the same MJCF with its MuJoCo custom
+attributes, so MuJoCo Warp runs the Menagerie `<option>` settings and the position actuators
+natively (`ctrl_direct`, fed from `control.mujoco.ctrl`), with 512 contact and 256 constraint
+slots per world: its automatic 64 overflowed (MuJoCo peaks at 60 and 103 constraint rows standing
+up), and the controller fails any trial whose log reports a MuJoCo Warp overflow. Isaac Sim converts the MJCF with its
+importer (mujoco-usd-converter, PhysX variant) into one articulation per environment over a
+single shared ground plane (friction 0.8, max combine like MuJoCo). The converter leaves the joint
+drives without gains, so they take the compiled MuJoCo position actuators: stiffness kp, damping
+kv plus joint damping, maximum force from the actuator force range, joint armature, targets
+clamped to the control range; joint friction loss (0.1 on the T1) is not modelled. Robot
+articulations run 16 position and 1 velocity solver iterations: with 4 or 8, the T1 slowly
+tips over on its force-limited ankles. Rapier and Nexus robots both run one substep
 with four internal PGS iterations per 240 Hz step. Nexus uses explicit Coriolis forces
 and `friction_in_bias_pass = false`, with `substep_refresh` and `substep_refresh_light`
 false. Rapier keeps its semi-implicit Coriolis term (with its explicit fallback on
