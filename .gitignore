@@ -1,7 +1,9 @@
 /.physmark/
 /target/
 /results/
+/result/
 /adapters/*/target/
+MUJOCO_LOG.TXT
 __pycache__/
 *.pyc
 .DS_Store
