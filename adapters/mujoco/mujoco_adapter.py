@@ -28,7 +28,7 @@ class Mujoco:
         self.settings = {
             "solver": "Newton",
             "iterations": 50,
-            "integrator": "Euler",
+            "integrator": mujoco.mjtIntegrator(self.model.opt.integrator).name.removeprefix("mjINT_"),
             "precision": "f64",
             "sleeping": False,
             "world_execution": "serial",
