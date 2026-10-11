@@ -564,7 +564,9 @@ fn subprocess(
             if let Some(line) = first(&["failed to allocate memory", "fail to launch kernel"]) {
                 bail!("adapter out of memory: GPU allocation failed: {line}; see {}", log.display());
             }
-            if let Some(line) = first(&["buffer overflow detected"]) {
+            // PhysX contact buffers, and MuJoCo Warp's constraint and contact buffers
+            // ("nefc overflow - please increase njmax"), drop what does not fit.
+            if let Some(line) = first(&["buffer overflow detected", "overflow - please increase"]) {
                 bail!("adapter reported a GPU buffer overflow: {line}; see {}", log.display());
             }
             return Ok(());
