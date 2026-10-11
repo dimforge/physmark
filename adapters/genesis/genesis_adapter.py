@@ -45,9 +45,13 @@ class Genesis:
             show_viewer=False,
             profiling_options=gs.options.ProfilingOptions(show_FPS=False),
         )
-        self.entity = self.scene.add_entity(
-            gs.morphs.MJCF(file=str(path)), material=gs.materials.Rigid()
-        )
+        # Genesis allocates an SDF grid of up to sdf_max_res³ cells per geom (default 128³,
+        # about 40 MiB each) but only fills and queries them for non-convex geoms. Primitive scenes
+        # are all convex, so they get its minimum, 16³: the default would only inflate memory and
+        # exceeds Genesis's 2³¹ / 3-cell limit from about 340 bodies. Robot meshes keep the default.
+        sdf_res = None if job["scene"].get("robot") else 16
+        material = gs.materials.Rigid(**({} if sdf_res is None else dict(sdf_min_res=16, sdf_max_res=16)))
+        self.entity = self.scene.add_entity(gs.morphs.MJCF(file=str(path)), material=material)
         self.scene.build(n_envs=job["worlds"])
         if job["scene"].get("robot"):
             import numpy as np
@@ -85,6 +89,8 @@ class Genesis:
             "device": str(gs.device),
             "actual_backend": str(gs.backend),
             "rigid_options": self.scene.options.rigid.model_dump(mode="json"),
+            "sdf_max_res": sdf_res or 128,
+            "sdf_active": self.scene.sim.rigid_solver.collider._sdf.is_active,
         }
 
     def reset(self):

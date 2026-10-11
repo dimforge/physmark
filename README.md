@@ -18,7 +18,26 @@ Engines: **Rapier**, **Nexus**, **Genesis**, **Newton**, **MuJoCo**, **MJX** and
 ## Run the full benchmark
 
 Prerequisites: Git, Rust, Python 3, [`uv`](https://docs.astral.sh/uv/), CMake,
-Ninja and FFmpeg (plus the Xcode command-line tools on macOS).
+Ninja and FFmpeg (plus the Xcode command-line tools on macOS):
+
+```sh
+# Ubuntu/Debian
+sudo apt install git python3 cmake ninja-build ffmpeg libgl-dev
+# macOS
+xcode-select --install && brew install cmake ninja ffmpeg
+# uv (both); make sure ~/.local/bin is on your PATH afterwards
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+On NVIDIA GPUs, Nexus compiles its shaders with Khal's `cargo cuda`, which also
+needs the CUDA toolkit (`CUDA_PATH` pointing at it) and a one-time install of the
+Rust-CUDA codegen backend. See the [Khal README](https://github.com/dimforge/khal#readme)
+for its native requirements (notably LLVM 7.1 for `LLVM_CONFIG`):
+
+```sh
+cargo install --git https://github.com/dimforge/khal cargo-cuda --force
+LLVM_CONFIG=$HOME/llvm-7/bin/llvm-config cargo cuda install
+```
 
 ```sh
 cargo run --release -- round results/full

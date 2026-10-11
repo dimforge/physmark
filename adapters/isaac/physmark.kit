@@ -1,0 +1,21 @@
+# Physics-only Kit experience: Isaac Sim's default one starts the RTX renderer, whose CUDA
+# memory tracking holds the process's only CUPTI subscription and blocks GPU profiling.
+[package]
+title = "PhysMark Isaac Sim physics"
+version = "1.0.0"
+
+[dependencies]
+"omni.kit.loop-isaac" = {}
+"omni.kit.usd.layers" = {}
+"omni.physx" = {}
+"omni.physics.tensors" = {}
+"omni.physx.tensors" = {}
+"omni.usd" = {}
+
+[settings.app]
+name = "PhysMark"
+version = "1.0.0"
+settings.persistent = false
+
+[settings.app.exts.folders]
+'++' = ["${kit}/../exts", "${kit}/../extscache", "${kit}/../extsDeprecated"]

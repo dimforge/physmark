@@ -81,28 +81,42 @@ def render_large(record, out, scene, frames, bodies, bounds, geometry, rotation,
     lo, hi = bounds
     center = (lo + hi) / 2
     span = float(max(hi - lo))
-    if scene["scenario"] != "free_fall":
-        floor = [[[lo[0]-span, lo[1]-span, 0], [hi[0]+span, lo[1]-span, 0],
-                  [hi[0]+span, hi[1]+span, 0], [lo[0]-span, hi[1]+span, 0]]]
-        mapper = vtk.vtkPolyDataMapper()
-        mapper.SetInputData(mesh(floor))
-        actor(mapper, "#263746")
-    for body in scene["bodies"]:
-        if not body["dynamic"] and body["position"][2] > 0:
+    elevation, azimuth = np.radians([23, -62])
+    direction = np.array([np.cos(elevation)*np.cos(azimuth), np.cos(elevation)*np.sin(azimuth), np.sin(elevation)])
+    if scene.get("mpm"):
+        # The tank as a cutaway bucket: solid floor and far walls, outlines for the walls facing
+        # the camera, so the material stays visible inside its container.
+        for body in scene["bodies"]:
+            if body["dynamic"]:
+                continue
             faces = [v @ rotation(body["rotation"]).T + body["position"] for v in geometry(body)]
             mapper = vtk.vtkPolyDataMapper()
             mapper.SetInputData(mesh(faces))
-            boundary_actor = actor(mapper, "#64778a")
-            if scene.get("mpm"):
-                boundary_actor.GetProperty().SetRepresentationToWireframe()
+            wall = body["position"][2] > 0
+            near = wall and float(np.dot(body["position"][:2], direction[:2])) > 0
+            boundary = actor(mapper, "#64778a" if wall else "#263746")
+            if near:
+                boundary.GetProperty().SetRepresentationToWireframe()
+                boundary.GetProperty().SetColor(rgb("#a3afbb"))
+    else:
+        if scene["scenario"] != "free_fall":
+            floor = [[[lo[0]-span, lo[1]-span, 0], [hi[0]+span, lo[1]-span, 0],
+                      [hi[0]+span, hi[1]+span, 0], [lo[0]-span, hi[1]+span, 0]]]
+            mapper = vtk.vtkPolyDataMapper()
+            mapper.SetInputData(mesh(floor))
+            actor(mapper, "#263746")
+        for body in scene["bodies"]:
+            if not body["dynamic"] and body["position"][2] > 0:
+                faces = [v @ rotation(body["rotation"]).T + body["position"] for v in geometry(body)]
+                mapper = vtk.vtkPolyDataMapper()
+                mapper.SetInputData(mesh(faces))
+                actor(mapper, "#64778a")
     camera = renderer.GetActiveCamera()
-    elevation, azimuth = np.radians([23, -62])
-    direction = np.array([np.cos(elevation)*np.cos(azimuth), np.cos(elevation)*np.sin(azimuth), np.sin(elevation)])
     camera.SetPosition(*(center + 3 * span * direction))
     camera.SetFocalPoint(*center)
     camera.SetViewUp(0, 0, 1)
     camera.ParallelProjectionOn()
-    camera.SetParallelScale(span * 0.70)
+    camera.SetParallelScale(span * (0.85 if scene.get("mpm") else 0.70))
     camera.SetClippingRange(span * 0.01, span * 10)
     capture = vtk.vtkWindowToImageFilter()
     capture.SetInput(window)

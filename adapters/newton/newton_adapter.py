@@ -4,7 +4,7 @@ from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "common"))
-from physmark_adapter import initial_velocities, main, mjcf  # noqa: E402
+from physmark_adapter import arena_cap_bytes, initial_velocities, is_arena_allocation_failure, main, mjcf  # noqa: E402
 
 
 class Newton:
@@ -28,6 +28,22 @@ class Newton:
             for i in range(job["worlds"]):
                 builder.add_world(single, label_prefix=f"env{i}")
             self.model = builder.finalize(device=self.device)
+            # SolverMuJoCo compiles its own MjSpec with MuJoCo's automatic arena, which cannot be
+            # allocated on Linux from about 8,000 bodies; retry those with the shared cap.
+            import mujoco
+
+            compile_spec = mujoco.MjSpec.compile
+
+            def compile_with_arena(spec, *args, **kwargs):
+                try:
+                    return compile_spec(spec, *args, **kwargs)
+                except ValueError as error:
+                    if spec.memory >= 0 or not is_arena_allocation_failure(error):
+                        raise
+                    spec.memory = arena_cap_bytes()
+                    return compile_spec(spec, *args, **kwargs)
+
+            mujoco.MjSpec.compile = compile_with_arena
             self.solver = newton.solvers.SolverMuJoCo(
                 self.model,
                 use_mujoco_cpu=False,

@@ -78,6 +78,9 @@ enum Action {
         /// Skip remaining trials of engine:scenario:size:worlds=reason; retained as unranked outcomes.
         #[arg(long = "skip-case")]
         skip_cases: Vec<String>,
+        /// Run cases that earlier runs on this machine recorded as out of memory.
+        #[arg(long)]
+        retry_known_failures: bool,
         #[arg(long)]
         timeout: Option<u64>,
         #[arg(short, long)]
@@ -96,6 +99,19 @@ enum Action {
         /// Use the engines already built.
         #[arg(long)]
         skip_build: bool,
+        /// Run cases that earlier runs on this machine recorded as out of memory.
+        #[arg(long)]
+        retry_known_failures: bool,
+    },
+    /// Re-run only the memory replay of listed passing trials and replace their memory results,
+    /// keeping their timings (the previous measurement is kept in the record).
+    RemeasureMemory {
+        directory: PathBuf,
+        #[arg(long, value_delimiter = ',', required = true)]
+        ids: Vec<String>,
+        /// Why the memory is remeasured, stored with each record.
+        #[arg(long)]
+        reason: String,
     },
     /// Regenerate offline HTML, performance curves, screenshots and videos.
     Report {
@@ -362,8 +378,8 @@ fn memory_limit_bytes() -> Result<Option<u64>> {
         return Ok(None);
     };
     ensure!(
-        cfg!(target_os = "macos"),
-        "memory monitoring currently requires macOS"
+        cfg!(any(target_os = "macos", target_os = "linux")),
+        "memory monitoring currently requires macOS or Linux"
     );
     let gib: u64 = value.to_string_lossy().parse()?;
     ensure!(gib > 0, "memory limit must be positive");
@@ -385,9 +401,104 @@ fn process_footprint(pid: u32) -> Option<u64> {
         None
     }
 }
-#[cfg(not(target_os = "macos"))]
+/// Anonymous plus shared resident memory of the adapter's whole process group (it leads its
+/// own group, so JIT and worker descendants count too). File-backed pages are excluded: they
+/// are reclaimable, and CUDA/Torch libraries alone map gigabytes of them.
+#[cfg(target_os = "linux")]
+fn process_footprint(pid: u32) -> Option<u64> {
+    let mut total = 0;
+    let mut found = false;
+    for entry in fs::read_dir("/proc").ok()?.flatten() {
+        let path = entry.path();
+        let Ok(stat) = fs::read_to_string(path.join("stat")) else {
+            continue;
+        };
+        // The command name may contain spaces; fields after its closing parenthesis are fixed.
+        let Some(group) = stat
+            .rsplit_once(')')
+            .and_then(|(_, rest)| rest.split_whitespace().nth(2))
+        else {
+            continue;
+        };
+        if group != pid.to_string() {
+            continue;
+        }
+        let Ok(status) = fs::read_to_string(path.join("status")) else {
+            continue;
+        };
+        found = true;
+        for line in status.lines() {
+            if let Some(kib) = line
+                .strip_prefix("RssAnon:")
+                .or_else(|| line.strip_prefix("RssShmem:"))
+                .and_then(|v| v.trim().trim_end_matches("kB").trim().parse::<u64>().ok())
+            {
+                total += kib * 1024;
+            }
+        }
+    }
+    found.then_some(total)
+}
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 fn process_footprint(_pid: u32) -> Option<u64> {
     None
+}
+/// The last line of an adapter log reporting an allocation failure or an engine refusing a
+/// size it cannot allocate (numpy, MuJoCo, JAX/XLA, PyTorch, CUDA, Rust, Genesis guards).
+fn out_of_memory_line(log: &Path) -> Option<String> {
+    const MARKERS: [&str; 9] = [
+        "memoryerror",
+        "unable to allocate",
+        "could not allocate memory",
+        "out of memory",
+        "resource_exhausted",
+        "outofmemoryerror",
+        "cuda_error_out_of_memory",
+        "memory allocation of",
+        "failed to allocate",
+    ];
+    let text = fs::read(log).ok()?;
+    let tail = String::from_utf8_lossy(&text[text.len().saturating_sub(1 << 16)..]).into_owned();
+    tail.lines().rev().find_map(|line| {
+        let lower = line.to_lowercase();
+        let refused_size = lower.contains("shape (") && lower.contains("is too large");
+        (refused_size || MARKERS.iter().any(|m| lower.contains(m))).then(|| {
+            // Drop terminal colour codes some engines log with.
+            let mut clean = String::new();
+            let mut chars = line.chars();
+            while let Some(c) = chars.next() {
+                if c == '\u{1b}' {
+                    chars.by_ref().find(|c| c.is_ascii_alphabetic());
+                } else {
+                    clean.push(c);
+                }
+            }
+            clean.trim().chars().take(300).collect()
+        })
+    })
+}
+/// `oom` for memory-cap kills and allocation failures, `timeout` for timeouts.
+fn resource_failure(error: &str) -> Option<&'static str> {
+    if error.contains("adapter memory limit exceeded") || error.contains("adapter out of memory") {
+        Some("OOM")
+    } else if error.contains("adapter timed out") {
+        Some("timeout")
+    } else {
+        None
+    }
+}
+/// Engine source identity for known failures: they are retried after a pin change.
+fn engine_pin(lock: &toml::Value, engine: &str) -> String {
+    let entry = &lock["engines"][engine];
+    [entry.get("commit"), entry.get("distribution")]
+        .into_iter()
+        .flatten()
+        .filter_map(|v| v.as_str())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+fn known_failures_path(root: &Path) -> PathBuf {
+    root.join(".physmark/known-resource-failures.json")
 }
 fn subprocess(
     mut cmd: Command,
@@ -430,15 +541,36 @@ fn subprocess(
     let mut last_memory_check = start;
     loop {
         if let Some(status) = child.try_wait()? {
+            if !status.success()
+                && let Some(line) = out_of_memory_line(log)
+            {
+                bail!("adapter out of memory: {line}; see {}", log.display());
+            }
             ensure!(
                 status.success(),
                 "adapter exited {status}; see {}",
                 log.display()
             );
+            // PhysX logs GPU failures and carries on: a full contact buffer drops contacts, and a
+            // failed device allocation leaves every solver kernel unlaunched, so nothing moves and
+            // the trial would pass with an impossible step time.
+            let text = fs::read(log).unwrap_or_default();
+            let text = String::from_utf8_lossy(&text);
+            let first = |needles: &[&str]| {
+                text.lines()
+                    .find(|l| needles.iter().any(|n| l.to_lowercase().contains(n)))
+                    .map(|l| l.trim().chars().take(300).collect::<String>())
+            };
+            if let Some(line) = first(&["failed to allocate memory", "fail to launch kernel"]) {
+                bail!("adapter out of memory: GPU allocation failed: {line}; see {}", log.display());
+            }
+            if let Some(line) = first(&["buffer overflow detected"]) {
+                bail!("adapter reported a GPU buffer overflow: {line}; see {}", log.display());
+            }
             return Ok(());
         }
         if let Some(limit) = memory_limit
-            && last_memory_check.elapsed() >= Duration::from_secs(1)
+            && last_memory_check.elapsed() >= Duration::from_millis(200)
         {
             last_memory_check = Instant::now();
             if let Some(bytes) = process_footprint(child.id())
@@ -452,7 +584,7 @@ fn subprocess(
                 let _ = child.kill();
                 let _ = child.wait();
                 bail!(
-                    "adapter memory limit exceeded: physical footprint {bytes} bytes > {limit} bytes; see {}",
+                    "adapter memory limit exceeded: memory footprint {bytes} bytes > {limit} bytes; see {}",
                     log.display()
                 );
             }
@@ -477,16 +609,116 @@ fn atomic_json(path: &Path, value: &impl Serialize) -> Result<()> {
     fs::rename(tmp, path)?;
     Ok(())
 }
+/// Independent memory replay of a passing trial; fills `record["memory"]` (and its validation).
+fn memory_replay(
+    root: &Path,
+    engine: &str,
+    dir: &Path,
+    job: &Job,
+    timeout: u64,
+    threads: usize,
+    record: &mut Value,
+) -> Result<()> {
+    let profile = Job {
+        mode: "memory".into(),
+        ..job.clone()
+    };
+    atomic_json(&dir.join("memory-job.json"), &profile)?;
+    let measurement = (|| -> Result<physmark_core::memory::MemoryMeasurement> {
+        subprocess(
+            adapter_command(root, engine),
+            root,
+            &dir.join("memory-job.json"),
+            &dir.join("memory-result.json"),
+            &dir.join("memory.log"),
+            timeout,
+            threads,
+        )?;
+        let result: AdapterResult = serde_json::from_slice(&fs::read(dir.join("memory-result.json"))?)?;
+        let validation = validate_result(&profile, &result);
+        ensure!(
+            validation.passed,
+            "memory replay failed physics validation: {:?}",
+            validation.reasons
+        );
+        let memory = result.memory.context("adapter omitted memory measurement")?;
+        memory.validate(&profile)?;
+        record["memory_validation"] = serde_json::to_value(validation)?;
+        Ok(memory)
+    })();
+    record["memory"] = match measurement {
+        Ok(memory) => serde_json::to_value(memory)?,
+        Err(error) => json!({"status":"error", "reason":format!("{error:#}")}),
+    };
+    Ok(())
+}
+/// Re-runs only the memory replay of listed passing trials of a run, keeping their timings.
+fn remeasure_memory(root: &Path, out: &Path, ids: &[String], reason: &str) -> Result<()> {
+    verify_sources(root)?;
+    ensure!(
+        fs::read_to_string(root.join(".physmark/build.stamp")).unwrap_or_default() == stamp(root)?,
+        "adapter sources, pins or dependencies changed; run `cargo run --release -- build` first"
+    );
+    let metadata: Value = serde_json::from_slice(&fs::read(out.join("metadata.json"))?)?;
+    let suite: Suite = serde_json::from_value(metadata["suite"].clone())?;
+    let threads = metadata["threads_requested"].as_u64().context("metadata lacks threads")? as usize;
+    let mut records: Vec<Value> = serde_json::from_slice(&fs::read(out.join("results.json"))?)?;
+    let epoch = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+    for id in ids {
+        let index = records
+            .iter()
+            .position(|r| r["id"] == id.as_str())
+            .with_context(|| format!("no trial {id}"))?;
+        ensure!(records[index]["status"] == "passed", "{id} did not pass; nothing to remeasure");
+        let dir = out.join(records[index]["directory"].as_str().unwrap_or_default());
+        let job: Job = serde_json::from_slice(&fs::read(dir.join("job.json"))?)?;
+        let timeout = if job.backend == "cpu" {
+            suite.cpu_timeout_seconds.unwrap_or(suite.timeout_seconds)
+        } else {
+            suite.timeout_seconds
+        };
+        let engine = job.engine.clone();
+        let previous = records[index]["memory"].clone();
+        println!("remeasuring memory of {id}");
+        memory_replay(root, &engine, &dir, &job, timeout, threads, &mut records[index])?;
+        records[index]["memory_remeasured"] = json!({"reason":reason,"created_unix":epoch,
+            "build_stamp":stamp(root)?,"previous_memory":previous});
+        println!("  memory {}", records[index]["memory"]["status"]);
+        atomic_json(&out.join("results.json"), &records)?;
+    }
+    let history_path = out.join("remeasure-history.json");
+    let mut history: Vec<Value> = fs::read(&history_path)
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default();
+    history.push(json!({"created_unix":epoch,"ids":ids,"reason":reason,"build_stamp":stamp(root)?}));
+    atomic_json(&history_path, &history)
+}
 fn validate_resume_metadata(previous: &Value, current: &Value) -> Result<()> {
-    for key in ["memory_limit_bytes", "scheduling"] {
+    // Scheduling may change: it only orders the remaining trials, and each resume's metadata
+    // is kept in resume-history.json.
+    for key in ["memory_limit_bytes"] {
         ensure!(
             previous.get(key) == current.get(key),
             "cannot resume: {key} changed"
         );
     }
+    // Timeouts may change: they decide which slow cases finish, not how a finished trial was
+    // measured. Everything else in the suite must match.
+    let suite = |m: &Value| {
+        let mut s = m.get("suite").cloned().unwrap_or(Value::Null);
+        if let Some(o) = s.as_object_mut() {
+            o.remove("timeout_seconds");
+            o.remove("cpu_timeout_seconds");
+        }
+        s
+    };
+    ensure!(
+        previous.get("suite").is_some() && suite(previous) == suite(current),
+        "cannot resume: suite changed"
+    );
     for key in [
         "schema_version",
-        "suite",
         "backends",
         "threads_requested",
         "source_pins",
@@ -566,6 +798,7 @@ fn run(
     out: Option<PathBuf>,
     resume: bool,
     skip_cases: Vec<String>,
+    retry_known_failures: bool,
 ) -> Result<()> {
     if suite.scenarios.iter().any(|s| s.starts_with("mpm_")) {
         ensure!(
@@ -586,6 +819,13 @@ fn run(
     }
     let skip_cases = parse_skip_cases(&skip_cases)?;
     verify_sources(root)?;
+    let pins = lock(root)?;
+    let memory_limit = memory_limit_bytes()?;
+    // Machine-local record of out-of-memory cases, consulted unless retrying them.
+    let mut known_failures: Vec<Value> = fs::read(known_failures_path(root))
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default();
     ensure!(
         fs::read_to_string(root.join(".physmark/build.stamp")).unwrap_or_default() == stamp(root)?,
         "adapter sources, pins or dependencies changed; run `cargo run --release -- build` first"
@@ -657,7 +897,7 @@ fn run(
     let mut metadata = metadata;
     metadata["memory_limit_bytes"] = json!(memory_limit_bytes()?);
     metadata["scheduling"] = json!(
-        "ascending environment count; deterministic shuffled trials within each count; serial adapters"
+        "ascending environment count, then size; deterministic shuffled trials within each; serial adapters"
     );
     metadata["memory_monitor"] = json!(
         "when enabled: macOS adapter physical footprint sampled once per second by the controller; exceeding the limit terminates the trial"
@@ -673,7 +913,33 @@ fn run(
         };
         history.push(json!({"metadata":metadata,"skip_cases":skip_cases}));
         atomic_json(&history_path, &history)?;
-        serde_json::from_slice(&fs::read(out.join("results.json"))?)?
+        let mut records: Vec<Value> = serde_json::from_slice(&fs::read(out.join("results.json"))?)?;
+        // Errors recorded before allocation failures were recognized are reclassified from
+        // their logs, so they feed the resource policy and the known failures too.
+        for r in &mut records {
+            let Some(error) = r["error"].as_str().filter(|e| r["status"] == "error" && e.starts_with("adapter exited")) else {
+                continue;
+            };
+            let log = out.join(r["directory"].as_str().unwrap_or_default()).join("adapter.log");
+            if let Some(line) = out_of_memory_line(&log) {
+                r["error_before_reclassification"] = json!(error);
+                r["error"] = json!(format!("adapter out of memory: {line}; see {}", log.display()));
+            }
+        }
+        for r in &records {
+            if r["status"] == "error" && r["error"].as_str().and_then(resource_failure) == Some("OOM")
+                && !known_failures.iter().any(|k| k["trial"] == r["id"] && k["run"] == out.display().to_string())
+            {
+                let capped = r["error"].as_str().is_some_and(|e| e.contains("adapter memory limit exceeded"));
+                known_failures.push(json!({"engine":r["engine"],"backend":r["backend"],"scenario":r["scenario"],
+                    "size":r["size"],"worlds":r["worlds"],"pin":engine_pin(&pins, r["engine"].as_str().unwrap_or_default()),
+                    "memory_limit_bytes":if capped { json!(memory_limit) } else { Value::Null },
+                    "trial":r["id"],"run":out.display().to_string(),"error":r["error"],"created_unix":epoch}));
+            }
+        }
+        atomic_json(&known_failures_path(root), &known_failures)?;
+        atomic_json(&out.join("results.json"), &records)?;
+        records
     } else {
         atomic_json(&out.join("metadata.json"), &metadata)?;
         vec![]
@@ -700,8 +966,9 @@ fn run(
         rng ^= rng << 17;
         order.swap(i, rng as usize % (i + 1));
     }
-    // Establish lower-memory cases first, keeping shuffled trials within each scale.
-    order.sort_by_key(|case| case.2);
+    // Establish lower-memory cases first, keeping shuffled trials within each scale, so a
+    // resource failure is known before the larger cases it rules out.
+    order.sort_by_key(|case| (case.2, case.1));
     let total = order.len();
     for (idx, (scenario, size, worlds, seed, repeat, engine)) in order.into_iter().enumerate() {
         let id = format!("{engine}-{scenario}-n{size}-w{worlds}-s{seed}-r{repeat}");
@@ -709,16 +976,31 @@ fn run(
             continue;
         }
         let case = format!("{engine}:{scenario}:{size}:{worlds}");
+        let backend = &backend_map[&engine];
+        // A case at least as large, in bodies and environments, as one that ran out of memory
+        // or time on the same engine and scene is assumed to fail the same way.
         let automatic_skip = if suite.skip_after_resource_limit {
-            records.iter().find(|r| r["engine"] == engine && r["scenario"] == scenario
-                && r["size"] == size && r["worlds"].as_u64().is_some_and(|n| n <= worlds as u64)
-                && r["status"] == "error" && r["error"].as_str().is_some_and(|e|
-                    e.contains("adapter timed out") || e.contains("adapter memory limit exceeded")))
-                .map(|r| format!("resource policy: {} reached its limit; remaining identical/larger environment batches skipped", r["id"]))
+            records.iter().find_map(|r| {
+                let kind = resource_failure(r["error"].as_str()?)?;
+                (r["engine"] == engine && r["scenario"] == scenario && r["status"] == "error"
+                    && r["size"].as_u64()? <= size as u64 && r["worlds"].as_u64()? <= worlds as u64)
+                    .then(|| format!("skipped (likely {kind}): {} failed with {kind} at {} × {}", r["id"], r["size"], r["worlds"]))
+            })
         } else {
             None
         };
-        let skip = skip_cases.get(&case).or(automatic_skip.as_ref());
+        let known_skip = known_failures.iter().filter(|_| !retry_known_failures).find_map(|k| {
+            let covers = k["engine"] == engine && k["backend"] == backend.as_str()
+                && k["scenario"] == scenario && k["pin"] == engine_pin(&pins, &engine)
+                && k["size"].as_u64()? <= size as u64 && k["worlds"].as_u64()? <= worlds as u64
+                // A memory-cap kill is retried once the cap is raised above the recorded one.
+                && match (k["memory_limit_bytes"].as_u64(), memory_limit) {
+                    (Some(recorded), Some(current)) => current <= recorded,
+                    _ => true,
+                };
+            covers.then(|| format!("skipped (likely OOM): known failure {} ({}); rerun with --retry-known-failures", k["trial"].as_str().unwrap_or(""), k["run"].as_str().unwrap_or("")))
+        });
+        let skip = skip_cases.get(&case).or(automatic_skip.as_ref()).or(known_skip.as_ref());
         let trial_timeout = if backend_map[&engine] == "cpu" {
             suite.cpu_timeout_seconds.unwrap_or(suite.timeout_seconds)
         } else {
@@ -751,6 +1033,9 @@ fn run(
         if let Some(reason) = skip {
             record["status"] = json!("skipped");
             record["error"] = json!(reason);
+            if let Some(label) = reason.split_once(')').filter(|_| reason.starts_with("skipped (")) {
+                record["outcome_label"] = json!(format!("{})", label.0));
+            }
             record["gpu_timing"] = json!({"status":"not_collected","reason":"trial skipped"});
             record["memory"] = json!({"status":"not_collected","reason":"trial skipped"});
             atomic_json(
@@ -794,6 +1079,14 @@ fn run(
             Err(e) => {
                 record["status"] = json!("error");
                 record["error"] = json!(format!("{e:#}"));
+                if resource_failure(&format!("{e:#}")) == Some("OOM") {
+                    let capped = format!("{e:#}").contains("adapter memory limit exceeded");
+                    known_failures.push(json!({"engine":engine,"backend":backend,"scenario":scenario,
+                        "size":size,"worlds":worlds,"pin":engine_pin(&pins, &engine),
+                        "memory_limit_bytes":if capped { json!(memory_limit) } else { Value::Null },
+                        "trial":id,"run":out.display().to_string(),"error":record["error"],"created_unix":epoch}));
+                    atomic_json(&known_failures_path(root), &known_failures)?;
+                }
             }
         }
         record["gpu_timing"] = json!({"status":if job.backend == "cpu" {"not_applicable"} else {"not_collected"},
@@ -851,40 +1144,7 @@ fn run(
         record["memory"] =
             json!({"status":"not_collected", "reason":"wall-time trial did not pass"});
         if record["status"] == "passed" {
-            let profile = Job {
-                mode: "memory".into(),
-                ..job.clone()
-            };
-            atomic_json(&dir.join("memory-job.json"), &profile)?;
-            let measurement = (|| -> Result<physmark_core::memory::MemoryMeasurement> {
-                subprocess(
-                    adapter_command(root, &engine),
-                    root,
-                    &dir.join("memory-job.json"),
-                    &dir.join("memory-result.json"),
-                    &dir.join("memory.log"),
-                    trial_timeout,
-                    threads,
-                )?;
-                let result: AdapterResult =
-                    serde_json::from_slice(&fs::read(dir.join("memory-result.json"))?)?;
-                let validation = validate_result(&profile, &result);
-                ensure!(
-                    validation.passed,
-                    "memory replay failed physics validation: {:?}",
-                    validation.reasons
-                );
-                let memory = result
-                    .memory
-                    .context("adapter omitted memory measurement")?;
-                memory.validate(&profile)?;
-                record["memory_validation"] = serde_json::to_value(validation)?;
-                Ok(memory)
-            })();
-            record["memory"] = match measurement {
-                Ok(memory) => serde_json::to_value(memory)?,
-                Err(error) => json!({"status":"error", "reason":format!("{error:#}")}),
-            };
+            memory_replay(root, &engine, &dir, &job, trial_timeout, threads, &mut record)?;
         }
         println!(
             "  {} / GPU {} / memory {}",
@@ -1068,6 +1328,7 @@ fn main() -> Result<()> {
             no_capture,
             resume,
             skip_cases,
+            retry_known_failures,
             timeout,
             output,
         } => {
@@ -1099,17 +1360,35 @@ fn main() -> Result<()> {
             if no_capture {
                 s.capture = false;
             }
-            run(&root, s, threads, backend, output, resume, skip_cases)
+            run(
+                &root,
+                s,
+                threads,
+                backend,
+                output,
+                resume,
+                skip_cases,
+                retry_known_failures,
+            )
         }
         Action::Report {
             directory,
             no_video,
         } => report(&root, &directory, no_video),
+        Action::RemeasureMemory {
+            directory,
+            ids,
+            reason,
+        } => {
+            let out = std::env::current_dir()?.join(directory);
+            remeasure_memory(&root, &out, &ids, &reason)
+        }
         Action::Round {
             output,
             resume,
             threads,
             skip_build,
+            retry_known_failures,
         } => {
             let mut c = Command::new(system_python());
             c.arg(root.join("tools/full_round.py"))
@@ -1125,6 +1404,9 @@ fn main() -> Result<()> {
             if skip_build {
                 c.arg("--skip-build");
             }
+            if retry_known_failures {
+                c.arg("--retry-known-failures");
+            }
             ensure!(c.status()?.success(), "full round failed");
             Ok(())
         }
@@ -1135,9 +1417,59 @@ fn main() -> Result<()> {
 mod tests {
     use super::*;
     #[test]
+    fn allocation_failures_are_classified_as_out_of_memory() {
+        let dir = std::env::temp_dir().join(format!("physmark-oom-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("adapter.log");
+        for (text, oom) in [
+            ("numpy._core._exceptions._ArrayMemoryError: Unable to allocate 150. GiB for an array", true),
+            ("ValueError: Error: engine error: Could not allocate memory", true),
+            ("\u{1b}[38;5;9m[Genesis] [ERROR] GenesisException: Mass matrix shape (n_dofs=60000, n_dofs=60000, n_envs=1) is too large.\u{1b}[0m", true),
+            ("jaxlib.xla_extension.XlaRuntimeError: RESOURCE_EXHAUSTED: Out of memory while trying to allocate", true),
+            ("memory allocation of 123456789 bytes failed", true),
+            ("ValueError: unsupported Genesis backend", false),
+        ] {
+            fs::write(&log, format!("setup\n{text}\n")).unwrap();
+            let line = out_of_memory_line(&log);
+            assert_eq!(line.is_some(), oom, "{text}");
+            if let Some(line) = line {
+                assert!(!line.contains('\u{1b}'), "{line}");
+                assert_eq!(resource_failure(&format!("adapter out of memory: {line}")), Some("OOM"));
+            }
+        }
+        assert_eq!(resource_failure("adapter timed out after 300s"), Some("timeout"));
+        assert_eq!(resource_failure("adapter exited exit status: 1"), None);
+        fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn known_failures_follow_the_engine_pin() {
+        let lock: toml::Value = toml::from_str(
+            "[engines.mjx]\ncommit = \"abc\"\n[engines.isaac]\ncommit = \"def\"\ndistribution = \"isaacsim==6\"\n",
+        )
+        .unwrap();
+        assert_eq!(engine_pin(&lock, "mjx"), "abc");
+        assert_eq!(engine_pin(&lock, "isaac"), "def isaacsim==6");
+    }
+    #[test]
     #[cfg(target_os = "macos")]
     fn physical_footprint_can_read_current_process() {
         assert!(process_footprint(std::process::id()).unwrap() > 0);
+    }
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn memory_footprint_covers_the_adapter_process_group() {
+        use std::os::unix::process::CommandExt;
+        // A shell leading its own group, holding ~64 MiB of anonymous memory in a child.
+        let mut child = Command::new("sh")
+            .args(["-c", "python3 -c 'b=bytearray(64<<20); import time; time.sleep(5)' & wait"])
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        thread::sleep(Duration::from_secs(2));
+        let bytes = process_footprint(child.id()).unwrap();
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(bytes > 60 << 20, "{bytes}");
     }
     #[test]
     fn resume_requires_identical_workload_pins_and_machine() {
@@ -1161,6 +1493,13 @@ mod tests {
             changed[key] = json!("changed");
             assert!(validate_resume_metadata(&original, &changed).is_err());
         }
+        let mut retimed = original.clone();
+        retimed["suite"]["timeout_seconds"] = json!(300);
+        retimed["scheduling"] = json!("ascending environment count, then size");
+        validate_resume_metadata(&original, &retimed).unwrap();
+        let mut resized = original.clone();
+        resized["suite"]["repeats"] = json!(1);
+        assert!(validate_resume_metadata(&original, &resized).is_err());
         assert!(parse_skip_cases(&["mjx:stacks:1024:1=memory limit".into()]).is_ok());
         assert!(parse_skip_cases(&["mjx:stacks:1024:1=".into()]).is_err());
     }

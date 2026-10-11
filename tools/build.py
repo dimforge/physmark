@@ -96,11 +96,27 @@ def main():
             "--manifest-path",
             "adapters/rapier/Cargo.toml",
         )
+        # Robot scenes: single-threaded worlds, one rayon task per environment (see main.rs).
+        run(
+            "cargo",
+            "build",
+            "--release",
+            "--locked",
+            "--manifest-path",
+            "adapters/rapier/Cargo.toml",
+            "--no-default-features",
+            "--target-dir",
+            "adapters/rapier/target/serial",
+        )
     if "nexus" in engines:
         backend = os.environ.get(
             "PHYSMARK_NEXUS_FEATURES",
             "metal" if platform.system() == "Darwin" else "webgpu",
         )
+        # Nexus commits no Cargo.lock, and `cargo cuda` compiles its shader crates inside its
+        # own workspace, outside the adapter lock. Seed that lock so the shaders resolve the
+        # same dependencies everywhere (an unlocked resolve picks a glam cuda_std can't build).
+        shutil.copy2(ROOT / "adapters/nexus/shaders.lock", SOURCES / "nexus/Cargo.lock")
         run(
             "cargo",
             "build",
@@ -170,6 +186,9 @@ def main():
             MUJOCO_PATH=str(prefix),
             MUJOCO_PLUGIN_PATH=str(prefix / "lib"),
             CMAKE_BUILD_PARALLEL_LEVEL="8",
+            # The bindings build GLFW for the interactive viewer, which needs X11/Wayland
+            # headers on Linux. Benchmarks never open it, so build only GLFW's null backend.
+            MUJOCO_CMAKE_ARGS="-DGLFW_BUILD_X11=OFF -DGLFW_BUILD_WAYLAND=OFF",
         )
         install(
             "--no-build-isolation",

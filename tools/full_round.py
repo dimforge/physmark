@@ -91,6 +91,9 @@ def probe(engine, backend, directory, threads):
     if status != 0:
         tail = log.read_text(errors="replace").strip().splitlines()[-1:] or ["no output"]
         return f"probe failed: {tail[0][:300]}"
+    if not result_path.exists():
+        # Isaac Sim's Kit app swallows Python exceptions and still exits 0.
+        return f"probe wrote no result; see {log.name}"
     result = json.loads(result_path.read_text())
     if result.get("backend") != backend or len(result.get("final_poses", [])) != 2:
         return "probe returned an incomplete result"
@@ -112,8 +115,9 @@ def plan_round(output, threads, skip_build):
             skipped[engine] = f"{backend}: {reason}"
             del backends[engine]
     memory_limit = None
-    if caps["system"] == "Darwin" and caps["memory_bytes"]:
-        # macOS only: the controller samples the adapter's physical footprint.
+    if caps["system"] in ("Darwin", "Linux") and caps["memory_bytes"]:
+        # The controller samples the adapter's physical footprint (macOS) or the resident
+        # anonymous memory of its process group (Linux) and kills it above this cap.
         memory_limit = int(os.environ.get("PHYSMARK_MEMORY_LIMIT_GIB") or int(caps["memory_bytes"] / 2**30 * 0.5625))
     return dict(created_unix=time.time(), capabilities=caps, backends=backends, skipped=skipped,
                 threads=threads, memory_limit_gib=memory_limit)
@@ -148,7 +152,7 @@ def index(output, plan, statuses):
     if not (output / "assets").exists():
         shutil.copytree(ROOT / "assets", output / "assets")
     backends = " · ".join(f"{NAMES[e]} {b.upper() if b in ('cpu', 'cuda') else b.capitalize()}" for e, b in plan["backends"].items())
-    limit = f" Physical-footprint cap: {plan['memory_limit_gib']} GiB." if plan.get("memory_limit_gib") else ""
+    limit = f" Adapter memory cap: {plan['memory_limit_gib']} GiB." if plan.get("memory_limit_gib") else ""
     (output / "index.html").write_text('''<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>PhysMark · Full round</title><link rel="icon" href="assets/branding/physmark-icon.svg">
 <style>:root{color-scheme:dark}body{background:#0b121b;color:#e8f0f6;font:16px/1.6 system-ui;margin:0}main{max-width:1120px;margin:60px auto;padding:0 28px}h1{font-size:42px;letter-spacing:-1.4px;line-height:1.15}h1 span{color:#66e3b5}h2{font-size:22px;margin:5px 0}p{color:#a8bac9}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:20px;margin:32px 0}article{background:#111d29;border:1px solid #25384a;border-radius:14px;padding:24px}a{color:#66e3b5;text-decoration:none;font-weight:600}.eyebrow{text-transform:uppercase;font-size:11px;letter-spacing:1.5px;color:#66e3b5}.counts{font-size:14px;color:#d4dee7}small{color:#9cb0c0}</style><main>
 <div class="eyebrow">''' + html.escape(hardware_line(plan)) + ''' · Full benchmark round</div><h1><img src="assets/branding/physmark-logo.svg" alt="physmark." style="width:290px;max-width:100%"></h1><p>''' + html.escape(backends) + f" · {plan['threads']} CPU workers" + '''</p><div class="grid">''' + "".join(cards) + '''</div><small>Each report includes synchronized timings, device timestamps where exposed, RAM/GPU memory, validation outcomes, scene previews and untimed replay videos. Rankings require complete valid coverage and use each suite’s declared baseline. Missing data and resource-limit skips remain visible. CPU subprocess budget: 120 seconds.''' + html.escape(limit) + '''</small></main></html>''')
@@ -161,6 +165,8 @@ def main():
     p.add_argument("--resume", action="store_true", help="continue an interrupted round with its recorded plan")
     p.add_argument("--threads", type=int, default=min(8, os.cpu_count() or 1))
     p.add_argument("--skip-build", action="store_true", help="use the engines already built")
+    p.add_argument("--retry-known-failures", action="store_true",
+                   help="run cases that earlier runs on this machine recorded as out of memory")
     args = p.parse_args()
     output = args.output.resolve()
     if output.exists() and not args.resume:
@@ -199,6 +205,8 @@ def main():
                    "--output", str(output / key)]
         if (output / key).exists():
             command.append("--resume")
+        if args.retry_known_failures:
+            command.append("--retry-known-failures")
         skip_file = output / "skip-cases.json"
         if skip_file.exists():
             for case, reason in json.loads(skip_file.read_text()).items():

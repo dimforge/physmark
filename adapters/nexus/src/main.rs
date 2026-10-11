@@ -11,7 +11,7 @@ mod mpm;
 use capacity::Budget;
 
 // Robot stand-up settings; other rigid scenes keep their existing defaults.
-const ROBOT_SUBSTEPS: u32 = 4;
+const ROBOT_SUBSTEPS: u32 = 1;
 const ROBOT_PGS_ITERATIONS: u32 = 4;
 const ROBOT_REFRESH: bool = false;
 const ROBOT_REFRESH_LIGHT: bool = false;

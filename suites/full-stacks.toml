@@ -10,6 +10,6 @@ seeds = [42]
 dt = 0.008333333333333333
 capture = true
 capture_stride = 8
-timeout_seconds = 1800
+timeout_seconds = 300
 cpu_timeout_seconds = 120
 skip_after_resource_limit = true

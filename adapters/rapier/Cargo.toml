@@ -6,9 +6,13 @@ edition = "2024"
 [dependencies]
 rapier3d-mjcf = { path = "../../.physmark/sources/rapier/crates/rapier3d-mjcf" }
 physmark-core = { path = "../../crates/physmark-core" }
-rapier3d = { path = "../../.physmark/sources/rapier/crates/rapier3d", features = ["parallel"] }
+rapier3d = { path = "../../.physmark/sources/rapier/crates/rapier3d" }
 anyhow = "1"
 serde_json = "1"
 rayon = "1"
+[features]
+# Robot scenes run a second build without it (see main.rs).
+default = ["parallel"]
+parallel = ["rapier3d/parallel"]
 [profile.release]
 lto = "thin"

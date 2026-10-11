@@ -4,7 +4,7 @@ from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "common"))
-from physmark_adapter import main, mjcf, robot_settings, to_body_frame, initial_velocities  # noqa: E402
+from physmark_adapter import compile_mjcf, main, mjcf, robot_settings, to_body_frame, initial_velocities  # noqa: E402
 
 
 class Mujoco:
@@ -15,7 +15,7 @@ class Mujoco:
         self.mj, self.np, self.job = mujoco, np, job
         if job["backend"] != "cpu":
             raise ValueError("native MuJoCo physics only supports backend=cpu")
-        self.model = mujoco.MjModel.from_xml_string(xml)
+        self.model = compile_mjcf(xml)
         if self.model.opt.enableflags & int(mujoco.mjtEnableBit.mjENBL_SLEEP):
             raise RuntimeError("MuJoCo sleeping must be disabled")
         self.ids = [

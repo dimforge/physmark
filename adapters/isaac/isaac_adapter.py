@@ -56,7 +56,7 @@ class Isaac:
         self.job, self.gpu = job, job["backend"] == "cuda"
         from isaacsim import SimulationApp
 
-        self.app = SimulationApp({"headless": True})
+        self.app = SimulationApp({"headless": True}, experience=str(Path(__file__).with_name("physmark.kit")))
         import carb
         import omni.physx
         import omni.physics.tensors as tensors
@@ -89,12 +89,15 @@ class Isaac:
         physx.CreateEnableCCDAttr(False)
         # GPU buffers are fixed at start; size them for the whole batch.
         total = job["worlds"] * len(scene["bodies"])
+        # The 28,000-brick ring needs about 27 contacts per body; PhysX drops the rest (bodies
+        # fall through the floor), so keep about 1.5x that. The controller fails any trial whose
+        # log reports a buffer overflow.
         for name, per_body, default in [
-            ("GpuMaxRigidContactCount", 16, 2**19),
-            ("GpuMaxRigidPatchCount", 8, 2**18),
-            ("GpuFoundLostPairsCapacity", 8, 2**18),
-            ("GpuFoundLostAggregatePairsCapacity", 8, 2**18),
-            ("GpuTotalAggregatePairsCapacity", 8, 2**18),
+            ("GpuMaxRigidContactCount", 40, 2**19),
+            ("GpuMaxRigidPatchCount", 20, 2**18),
+            ("GpuFoundLostPairsCapacity", 16, 2**18),
+            ("GpuFoundLostAggregatePairsCapacity", 16, 2**18),
+            ("GpuTotalAggregatePairsCapacity", 16, 2**18),
         ]:
             getattr(physx, f"Create{name}Attr")(max(default, per_body * total))
 
@@ -124,8 +127,11 @@ class Isaac:
         hinges = {h["body"]: h for h in scene["hinges"]}
         paths = []
         for e, offset in enumerate(self.offsets):
-            for b in scene["bodies"]:
-                path = f"/World/envs/env_{e}/body_{b['id']}"
+            for k, b in enumerate(scene["bodies"]):
+                # USD appends to a prim's child list in time proportional to its length, so a flat
+                # list of 110,000 bodies takes minutes to author; groups of at most 1,000 (and 64
+                # environments per block) keep it linear. Authoring order, hence PhysX order, is kept.
+                path = f"/World/envs/block_{e // 64}/env_{e}/group_{k // 1000}/body_{b['id']}"
                 xform = UsdGeom.Xform.Define(stage, path)
                 q = b["rotation"]
                 xform.AddTranslateOp(precision=UsdGeom.XformOp.PrecisionDouble).Set(
@@ -184,10 +190,11 @@ class Isaac:
                     joint.CreateLocalRot1Attr(Gf.Quatf(local[3], *local[:3]))
         self.paths = paths
 
-        self.physx = omni.physx.get_physx_interface()
         self.stepper = omni.physx.get_physx_simulation_interface()
-        self.physx.force_load_physics_from_usd()
-        self.physx.start_simulation()
+        # Attaching parses the stage into PhysX; the tensor API only sees an attached stage.
+        stage_id = omni.usd.get_context().get_stage_id()
+        if not self.stepper.attach_stage(stage_id):
+            raise RuntimeError("PhysX could not attach the Isaac stage")
         # One untimed step creates the GPU state the tensor views attach to.
         self.stepper.simulate(scene["dt"], 0.0)
         self.stepper.fetch_results()
@@ -195,7 +202,7 @@ class Isaac:
 
         self.torch = torch
         self.device = "cuda:0" if self.gpu else "cpu"
-        self.view = tensors.create_simulation_view("torch")
+        self.view = tensors.create_simulation_view("torch", stage_id)
         self.view.set_subspace_roots("/")
         self.bodies = self.view.create_rigid_body_view(paths)
         order = {p: i for i, p in enumerate(self.bodies.prim_paths)}
@@ -222,6 +229,7 @@ class Isaac:
             "stabilization": False,
             "ccd": False,
             "broadphase": "GPU" if self.gpu else "MBP",
+            "gpu_buffers_per_body": {"contacts": 40, "patches": 20, "found_lost_pairs": 16, "aggregate_pairs": 16},
             "gpu_dynamics": self.gpu,
             "world_execution": "native_batch (side-by-side environments on a grid)",
             "environment_spacing_m": spacing,

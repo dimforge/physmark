@@ -81,11 +81,11 @@ Counter references: [Apple Metal allocation counter](https://developer.apple.com
 | --- | --- |
 | Rapier | Native Rust, `parallel` feature, explicit thread budget; worlds run serially |
 | Nexus | Native Rust GPU pipeline (Metal, CUDA, WebGPU or CPU feature); native batching |
-| Genesis | Genesis rigid and MPM solvers through Python; native batching |
+| Genesis | Genesis rigid and MPM solvers through Python; native batching. Genesis allocates an SDF grid per geom (default up to 128³ cells, about 40 MiB each) but only fills and queries them for non-convex geoms; primitive scenes are all convex and use its minimum, 16³, so its memory figures exclude unused buffers (the default also exceeds its int32 cell limit from about 340 bodies). Each trial records `sdf_max_res` and `sdf_active`. Robot scenes keep the default |
 | Newton | `SolverMuJoCo(use_mujoco_cpu=False)`, i.e. MuJoCo Warp, for rigid bodies; `SolverImplicitMPM` for MPM |
-| MuJoCo | Native library and Python extension built from the pinned source commit; worlds run serially |
+| MuJoCo | Native library and Python extension built from the pinned source commit; worlds run serially. Models keep MuJoCo's automatic arena size; only when it cannot be allocated (Linux refuses single allocations beyond RAM + swap, from about 8,000 bodies) is it capped at min(16 GiB, RAM / 2), for MuJoCo, MJX and Newton's MuJoCo Warp model alike. Arena size never changes results unless exhausted |
 | MJX | MuJoCo MJX JAX implementation, JIT-compiled and `vmap`ped across worlds |
-| Isaac Sim | PhysX 5 through Isaac Sim's wheels, USD stage built directly (see below) |
+| Isaac Sim | PhysX 5 through Isaac Sim's wheels, USD stage built directly (see below) in a physics-only Kit experience (the default one starts the RTX renderer, whose CUDA memory tracking blocks CUPTI profiling). Bodies are authored in groups of at most 1,000 (64 environments per block): USD child lists make a flat layout quadratic, about 33 s of setup at 28,000 bodies. GPU contact buffers hold 40 contacts and 20 patches per body. PhysX logs GPU failures and keeps running, so the controller fails any trial whose log reports a buffer overflow, a failed device allocation or a kernel that failed to launch (the latter two as out of memory): a failed allocation leaves the solver idle, and nothing moving would otherwise pass validation |
 
 MuJoCo Warp is a pinned Newton dependency, not a separately benchmarked engine. MJX shares MuJoCo's pin; Newton, MuJoCo and MuJoCo Warp may need coordinated pin updates (`pin mujoco-warp <ref>`). No engine is replaced by a mock or by another solver when its backend is unavailable: an unavailable backend produces a failed trial, and the full round skips the engine instead.
 
@@ -97,7 +97,7 @@ Coverage includes rigid primitives, world-anchored hinges, the MJCF robots and s
 
 A run returns a nonzero exit code if any trial fails or is skipped; the report still includes those trials. A fresh run never overwrites an existing output directory. `--output <dir> --resume` continues an interrupted run: completed results are kept, interrupted attempts are archived, and resumed provenance is saved in `resume-history.json`. Resumption requires the same suite, engine pins, backends, requested threads, Python package versions, Rust version and machine metadata.
 
-`--skip-case 'engine:scenario:size:worlds=reason'` excludes a known resource-failing case; skipped trials stay visible and prevent a complete-suite score. Suites with `skip_after_resource_limit` record the remaining identical/larger environment batches of an engine/scene/size as skipped after a timeout or memory-cap failure. Environment counts run in ascending order, with deterministic shuffled trials within each count. On macOS, `PHYSMARK_MEMORY_LIMIT_GIB` terminates an adapter whose physical footprint exceeds the limit (sampled once per second and recorded in provenance).
+`--skip-case 'engine:scenario:size:worlds=reason'` excludes a known resource-failing case; skipped trials stay visible and prevent a complete-suite score. Suites with `skip_after_resource_limit` treat a timeout, a memory-cap kill or an out-of-memory failure (an adapter log reporting a failed allocation, or an engine refusing a size it cannot allocate) as a resource limit: every remaining trial of that engine and scene with at least as many bodies and environments is recorded as `skipped (likely OOM)` or `skipped (likely timeout)`. Environment counts, then sizes, run in ascending order, with deterministic shuffled trials within each, so a limit is found before the larger cases it rules out. Out-of-memory cases are also stored per machine in `.physmark/known-resource-failures.json`, with the engine's source pin and the memory cap in force; later runs skip them and anything larger until the engine pin changes or the cap is raised above the recorded one. `--retry-known-failures` (on `run` and `round`) runs them anyway. On macOS and Linux, `PHYSMARK_MEMORY_LIMIT_GIB` terminates an adapter whose memory exceeds the limit: its physical footprint on macOS, the anonymous and shared resident memory of its whole process group on Linux (sampled every 200 ms and recorded in provenance). The full round sets it to 56.25% of RAM.
 
 In reports, solid curves show synchronized wall time and dashed curves device timestamps from the separate profiling replay; the leaderboard uses synchronized time. On unified-memory GPUs (Apple), RAM and GPU allocations overlap and must not be added.
 
@@ -171,10 +171,12 @@ excludes self-contacts consistently across engines. Rendered links use the
 original collision primitives, with poses at MJCF link origins. The source model
 and resulting portable MJCF are recorded in each job. Rapier and Nexus use the
 pinned Rapier MJCF loader and reduced-coordinate multibody joints; MuJoCo and
-Genesis use their native MJCF loaders. The current Nexus robotics preset uses four
-substeps and four internal PGS iterations per substep, explicit Coriolis forces, and
-`friction_in_bias_pass = false`. Both `substep_refresh` and
-`substep_refresh_light` are false. Its buffers follow the fixed Nexus capacity
+Genesis use their native MJCF loaders. Rapier and Nexus robots both run one substep
+with four internal PGS iterations per 240 Hz step. Nexus uses explicit Coriolis forces
+and `friction_in_bias_pass = false`, with `substep_refresh` and `substep_refresh_light`
+false. Rapier keeps its semi-implicit Coriolis term (with its explicit fallback on
+divergence), which it cannot switch off; its robot environments run as one rayon task
+each, on single-threaded worlds (a build without Rapier's `parallel` feature). Its buffers follow the fixed Nexus capacity
 policy described above; each contact point consumes one normal and two friction
 multibody contact slots.
 These settings apply to every robot workload.
@@ -195,11 +197,12 @@ Rapier parallelism enabled and up to 8 workers requested. Backends follow the
 detected hardware (see the README); Newton, MJX and Isaac Sim run only on CUDA, and
 engines that fail a two-step probe trial are skipped and listed, never substituted.
 The plan, including probe outcomes, is saved in `round-plan.json` and reused on
-`--resume` so resumed suites keep their backends. CPU subprocesses are limited to
-120 seconds including setup, warmup and rollout; GPU budgets are declared in each
-preset. On macOS, a physical-footprint cap of 56% of RAM limits
-each adapter. `skip_after_resource_limit` records subsequent identical/larger
-environment batches as skipped after a timeout or memory-cap error. Accuracy-gate
+`--resume` so resumed suites keep their backends. Every adapter process (timed trial and
+each replay) is limited to 300 seconds on GPU backends and 120 on CPU (300 for the
+110K–500K structures), including setup, warmup and rollout. On macOS and Linux, a cap of 56%
+of RAM limits each adapter. `skip_after_resource_limit` records every larger or identical
+case of an engine and scene as skipped after a timeout or out-of-memory failure, and
+out-of-memory cases are remembered per machine for later rounds. Accuracy-gate
 failures remain distinct from resource failures.
 
 Liquid MPM boundary friction is 0.01, the minimum accepted by Genesis's rigid

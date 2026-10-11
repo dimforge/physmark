@@ -6,6 +6,7 @@ that builds its simulation. The Rust controller never participates in the timed 
 """
 
 import json
+import os
 from pathlib import Path
 import sys
 import time
@@ -14,6 +15,37 @@ import xml.etree.ElementTree as ET
 
 def numbers(v):
     return " ".join(format(float(x), ".17g") for x in v)
+
+
+def arena_cap_bytes():
+    """MuJoCo arena for models whose automatic size cannot be allocated: min(16 GiB, RAM / 2).
+
+    The automatic size grows far faster than use (23 GiB at 4,000 bodies, while 10,000 rigid
+    bodies peaked at 383 MiB); Linux refuses single allocations beyond RAM + swap, so compiling
+    fails from about 8,000 bodies. Untouched arena pages are never resident."""
+    try:
+        ram = os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE")
+    except (AttributeError, ValueError, OSError):
+        ram = 2**35
+    return min(16 * 2**30, ram // 2)
+
+
+def is_arena_allocation_failure(error):
+    return "Could not allocate memory" in str(error)
+
+
+def compile_mjcf(xml):
+    """Compiles with MuJoCo's automatic arena, falling back to `arena_cap_bytes` only when that
+    arena cannot be allocated (the arena size never changes results unless it runs out)."""
+    import mujoco
+
+    try:
+        return mujoco.MjModel.from_xml_string(xml)
+    except ValueError as error:
+        if not is_arena_allocation_failure(error):
+            raise
+        capped = xml.replace("<worldbody>", f'<size memory="{arena_cap_bytes()}"/><worldbody>', 1)
+        return mujoco.MjModel.from_xml_string(capped)
 
 
 def mjcf(scene):

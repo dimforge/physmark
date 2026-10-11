@@ -115,7 +115,27 @@ def summarize(records, suite=None):
             )
         )
         rows[-1]["memory"] = memory_statistics(good, expected, complete)
+        rows[-1]["startup"] = startup_statistics(good, complete)
     return rows
+
+
+def startup_statistics(runs, complete):
+    """Setup + warmup seconds: time from building the engine to the first measured step.
+
+    Engines compile at different points (scene build, first steps), so only the sum compares."""
+    def seconds(r, key):
+        v = r.get(key)
+        return v if isinstance(v, (int, float)) and math.isfinite(v) and v >= 0 else None
+
+    totals = [seconds(r, "setup_seconds") + seconds(r, "warmup_seconds") for r in runs
+              if seconds(r, "setup_seconds") is not None and seconds(r, "warmup_seconds") is not None]
+    stat = lambda vs, q: float(np.percentile(vs, q)) if vs else None
+    return dict(
+        eligible=complete and len(totals) == len(runs),
+        median_s=stat(totals, 50), p25_s=stat(totals, 25), p75_s=stat(totals, 75),
+        setup_median_s=stat([r["setup_seconds"] for r in runs if seconds(r, "setup_seconds") is not None], 50),
+        warmup_median_s=stat([r["warmup_seconds"] for r in runs if seconds(r, "warmup_seconds") is not None], 50),
+    )
 
 
 def memory_statistics(runs, expected, complete):
@@ -193,7 +213,7 @@ def leaderboard(rows, engines, baseline_engine="mujoco"):
     return sorted(leaders, key=lambda r: -(r["score"] or 0))
 
 
-def curves(rows, out, records=(), memory_metric=None):
+def curves(rows, out, records=(), memory_metric=None, startup=False):
     files = []
     memory_names = {
         "ram": "RAM · peak resident set",
@@ -213,6 +233,14 @@ def curves(rows, out, records=(), memory_metric=None):
                     for key in ["median", "p25", "p75"]
                 },
             )
+            for r in rows
+        ]
+        if not any(r["eligible"] for r in rows):
+            return []
+    if startup:
+        rows = [
+            dict(r, eligible=r["startup"]["eligible"], gpu_eligible=False,
+                 **{f"{key}_ms": r["startup"][f"{key}_s"] for key in ["median", "p25", "p75"]})
             for r in rows
         ]
         if not any(r["eligible"] for r in rows):
@@ -250,7 +278,7 @@ def curves(rows, out, records=(), memory_metric=None):
             if preview
             else None
         )
-        for throughput in [False, True] if (batching or scenario.startswith("mpm_")) and not memory_metric else [False]:
+        for throughput in [False, True] if (batching or scenario.startswith("mpm_")) and not memory_metric and not startup else [False]:
             fig, ax = plt.subplots(figsize=(9, 5.5), layout="constrained")
 
             def plot_values(rs, prefix, style, label, color):
@@ -314,7 +342,7 @@ def curves(rows, out, records=(), memory_metric=None):
                         rs,
                         "",
                         "o-",
-                        f"{engine} / {rs[0]['backend']} · sync",
+                        f"{engine} / {rs[0]['backend']}" + ("" if startup else " · sync"),
                         COLORS[engine],
                     )
                 device = [r for r in rs if r.get("gpu_eligible")]
@@ -340,10 +368,13 @@ def curves(rows, out, records=(), memory_metric=None):
                 xlabel="Environments" if batching else {"robots": "Robots per environment", "particles": "Particles per environment", "bodies": "Dynamic bodies per world"}[count_unit(scenario)],
                 ylabel="Memory (MiB)"
                 if memory_metric
+                else "Setup + warmup (s)"
+                if startup
                 else ("Particle-steps / second" if scenario.startswith("mpm_") else "Environment-steps / second")
                 if throughput
                 else "Time / step across all environments (ms)",
                 title=(memory_names[memory_metric] + "\n" if memory_metric else "")
+                + ("Time to first measured step · setup + warmup\n" if startup else "")
                 + f"{scenario.replace('_', ' ')} · "
                 + (f"{count_label(scenario, count)} / environment" if batching else f"{count} world(s)")
                 + (" · higher is better" if throughput else " · lower is better"),
@@ -382,6 +413,8 @@ def curves(rows, out, records=(), memory_metric=None):
             suffix = f"n{count}-environments" if batching else f"w{count}"
             if memory_metric:
                 suffix += f"-memory-{memory_metric}"
+            if startup:
+                suffix += "-startup"
             filename = (
                 f"curves/{scenario}-{suffix}{'-throughput' if throughput else ''}"
             )
@@ -460,7 +493,7 @@ def geometry(body):
 
 
 # Bump when replay rendering changes so reports do not reuse obsolete media.
-RENDER_VERSION = 5
+RENDER_VERSION = 6
 
 
 class GroundPlane(Poly3DCollection):
@@ -491,6 +524,12 @@ def render(record, out, no_video=False):
     margin = 0.12 if scene.get("mpm") or scene.get("robot") else 1.0
     lo = positions.min(axis=(0, 1)) - margin
     hi = positions.max(axis=(0, 1)) + margin
+    if scene.get("mpm"):
+        # Frame the whole tank, not just the material in it.
+        for b in scene["bodies"]:
+            if not b["dynamic"]:
+                lo = np.minimum(lo, np.array(b["position"]) - b["size"])
+                hi = np.maximum(hi, np.array(b["position"]) + b["size"])
     if scene["scenario"] != "free_fall":
         lo[2] = -0.05 if scene.get("mpm") else -0.3
     center = (hi + lo) / 2
@@ -658,13 +697,13 @@ def brand_report(page, out):
 HTML = """<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>PhysMark — __TITLE__</title>
 __BRAND_HEAD__
 <style>:root{color-scheme:dark;--bg:#0d141b;--panel:#17222e;--line:#304252;--text:#eaf1f7;--muted:#a5b8c7;--accent:#41dcc3}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.6 system-ui,sans-serif}main{max-width:1400px;margin:auto;padding:38px}header{display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--line);padding-bottom:28px}.brand{font-size:30px;font-weight:750;letter-spacing:-1px}small,.muted{color:var(--muted)}h1{font-size:42px;letter-spacing:-1.5px;margin:30px 0 8px}h2{font-size:22px;margin-top:38px}p{max-width:970px}a{color:var(--accent)}.stats,.leaders,.gallery,.charts{display:grid;gap:16px;grid-template-columns:repeat(auto-fit,minmax(240px,1fr))}.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:22px}.number{font-size:30px;font-weight:700}.leaders .score{font-size:34px;font-weight:750;color:var(--accent)}table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}th,td{text-align:left;padding:11px;border-bottom:1px solid var(--line);white-space:nowrap}th{color:var(--muted);font-weight:500}select,input{background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:10px;font:inherit;margin:0 8px 12px 0}.scroll{overflow:auto}.passed{color:#52dfb1}.error,.invalid{color:#ff8d95}.charts{grid-template-columns:repeat(auto-fit,minmax(400px,1fr))}.charts img{width:100%;background:white;border-radius:8px}.gallery{grid-template-columns:repeat(auto-fit,minmax(300px,1fr))}.gallery video,.gallery img{width:100%;border-radius:8px}.gallery .card{padding:12px}.scene-section{margin-top:28px;padding-top:20px;border-top:1px solid var(--line)}.scene-section h3{font-size:20px;margin:0 0 4px}.scene-section>p{margin:0 0 16px}.tag{display:inline-block;border:1px solid var(--line);padding:3px 9px;border-radius:16px;font-size:12px}details{margin-top:24px}pre{white-space:pre-wrap;overflow-wrap:anywhere;color:var(--muted);font-size:12px}footer{margin-top:50px;border-top:1px solid var(--line);padding-top:22px;color:var(--muted)}@media(max-width:650px){main{padding:20px}h1{font-size:32px}.charts{grid-template-columns:1fr}header{display:block}}</style>
-<main><header>__BRAND_LOGO__<div class="muted">Physics, measured. <span class="tag">LOCAL BENCHMARK</span></div></header><h1>__TITLE__</h1><p class="muted">__HARDWARE__ · __DATE__<br>Synchronized physics stepping. Rendering and compilation excluded. Sleeping disabled.</p><div class="stats" id="stats"></div>__RUN_NOTES__<h2>Leaderboard · synchronized time</h2><p class="muted">Geometric mean speed relative to __BASELINE__ across every case in this suite (higher is faster). A score requires every requested trial and every baseline case to pass. These are baseline sanity checks, not matched-accuracy results. CPU and GPU entries are labelled separately.</p><div class="leaders" id="leaders"></div><h2>Performance curves</h2><p class="muted">Solid lines: synchronized wall time. Dashed lines: device timestamps from an independent warmed replay. Time covers a simulation step across all environments. Throughput is environments × 1,000 / milliseconds per batch step. Shading shows the timing 25th–75th percentiles across repeats and seeds, inverted for throughput. Each metric requires complete coverage. GPU scopes differ (pass sums, activity sums or activity unions); consult the table below. Profiling may alter scheduling; instrumented GPU times can exceed unprofiled synchronized times. The leaderboard uses only synchronized times.</p><div class="charts">__CURVES__</div><h2>GPU timing coverage</h2><div class="scroll">__GPU_STATUS__</div><h2>RAM and GPU memory · lower is better</h2><p class="muted">Separate memory replays preserve the timing measurements. RAM is the operating system’s process resident-set high-water mark; macOS physical footprint is also reported. GPU / VRAM is the sampled peak of native per-process device counters (10 ms target polling plus synchronized phase boundaries). Peaks cover setup, warmup, reset and rollout, ending before final readback and rendering. They include runtime, compilation caches and allocator pools, not just body data. Sampling can miss brief GPU peaks. Apple Silicon uses unified memory: GPU allocations and process RAM overlap and must not be added. Metal reports allocated resources; NVIDIA NVML reports per-process device memory, including context overhead. Different counter scopes are not interchangeable. Missing measurements are never inferred from timings or old results.</p><div class="charts">__MEMORY_CURVES__</div><div class="scroll">__MEMORY_STATUS__</div><h2>Trials</h2><select id="engine"><option value="">All engines</option></select><select id="scenario"><option value="">All scenarios</option></select><select id="status"><option value="">All outcomes</option><option>passed</option><option>invalid</option><option>error</option><option>skipped</option></select><div class="scroll"><table><thead><tr><th>Engine / backend</th><th>Scenario</th><th>__COUNT_UNIT__ × worlds</th><th>Seed / repeat</th><th>Sync ms / step</th><th>GPU ms / step</th><th>GPU timing</th><th>World steps / s</th><th>Peak RAM RSS MiB</th><th>Peak footprint MiB</th><th>GPU peak MiB (sampled)</th><th>Memory</th><th>Outcome</th><th>Evidence</th></tr></thead><tbody id="trials"></tbody></table></div><h2>Simulation gallery</h2><p class="muted">Independent untimed replay, rendered by the same renderer and camera rules. Batched cases show world 0. Videos play at simulated time.</p><div id="simulation-gallery">__GALLERY__</div><details><summary>Methodology, source pins and machine metadata</summary><pre id="metadata"></pre></details><footer><a href="results.json">Raw trials</a> · <a href="summary.json">Summary statistics</a> · <a href="metadata.json">Provenance</a> · PhysMark protocol v1__ROBOT_LICENSE__<br>No single score establishes physical accuracy. Inspect solver settings, validation errors, coverage and simulations alongside timing.</footer></main>
+<main><header>__BRAND_LOGO__<div class="muted">Physics, measured. <span class="tag">LOCAL BENCHMARK</span></div></header><h1>__TITLE__</h1><p class="muted">__HARDWARE__ · __DATE__<br>Synchronized physics stepping. Rendering and compilation excluded. Sleeping disabled.</p><div class="stats" id="stats"></div>__RUN_NOTES__<h2>Leaderboard · synchronized time</h2><p class="muted">Geometric mean speed relative to __BASELINE__ across every case in this suite (higher is faster). A score requires every requested trial and every baseline case to pass. These are baseline sanity checks, not matched-accuracy results. CPU and GPU entries are labelled separately.</p><div class="leaders" id="leaders"></div><h2>Performance curves</h2><p class="muted">Solid lines: synchronized wall time. Dashed lines: device timestamps from an independent warmed replay. Time covers a simulation step across all environments. Throughput is environments × 1,000 / milliseconds per batch step. Shading shows the timing 25th–75th percentiles across repeats and seeds, inverted for throughput. Each metric requires complete coverage. GPU scopes differ (pass sums, activity sums or activity unions); consult the table below. Profiling may alter scheduling; instrumented GPU times can exceed unprofiled synchronized times. The leaderboard uses only synchronized times.</p><div class="charts">__CURVES__</div><h2>GPU timing coverage</h2><div class="scroll">__GPU_STATUS__</div><h2>RAM and GPU memory · lower is better</h2><p class="muted">Separate memory replays preserve the timing measurements. RAM is the operating system’s process resident-set high-water mark; macOS physical footprint is also reported. GPU / VRAM is the sampled peak of native per-process device counters (10 ms target polling plus synchronized phase boundaries). Peaks cover setup, warmup, reset and rollout, ending before final readback and rendering. They include runtime, compilation caches and allocator pools, not just body data. Sampling can miss brief GPU peaks. Apple Silicon uses unified memory: GPU allocations and process RAM overlap and must not be added. Metal reports allocated resources; NVIDIA NVML reports per-process device memory, including context overhead. Different counter scopes are not interchangeable. Missing measurements are never inferred from timings or old results.</p><div class="charts">__MEMORY_CURVES__</div><div class="scroll">__MEMORY_STATUS__</div><h2>Time to first measured step · lower is better</h2><p class="muted">Setup (building the scene in a fresh process, including engine imports and any compilation done at build time) plus warmup (the untimed trajectory before the measured one, where lazily compiling engines compile their kernels). Engines compile at different points, so only the sum compares across engines. Process launch and interpreter start are excluded. Compilation caches persist between trials, so cold and warm starts mix; shading shows the 25th–75th percentiles across repeats.</p><div class="charts">__STARTUP_CURVES__</div><h2>Trials</h2><select id="engine"><option value="">All engines</option></select><select id="scenario"><option value="">All scenarios</option></select><select id="status"><option value="">All outcomes</option><option>passed</option><option>invalid</option><option>error</option><option>skipped</option></select><div class="scroll"><table><thead><tr><th>Engine / backend</th><th>Scenario</th><th>__COUNT_UNIT__ × worlds</th><th>Seed / repeat</th><th>Sync ms / step</th><th>GPU ms / step</th><th>GPU timing</th><th>World steps / s</th><th>Setup s</th><th>Warmup s</th><th>Peak RAM RSS MiB</th><th>Peak footprint MiB</th><th>GPU peak MiB (sampled)</th><th>Memory</th><th>Outcome</th><th>Evidence</th></tr></thead><tbody id="trials"></tbody></table></div><h2>Simulation gallery</h2><p class="muted">Independent untimed replay, rendered by the same renderer and camera rules. Batched cases show world 0. Videos play at simulated time.</p><div id="simulation-gallery">__GALLERY__</div><details><summary>Methodology, source pins and machine metadata</summary><pre id="metadata"></pre></details><footer><a href="results.json">Raw trials</a> · <a href="summary.json">Summary statistics</a> · <a href="metadata.json">Provenance</a> · PhysMark protocol v1__ROBOT_LICENSE__<br>No single score establishes physical accuracy. Inspect solver settings, validation errors, coverage and simulations alongside timing.</footer></main>
 <script>const DATA=__DATA__;const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));const fmt=x=>x==null?'—':Number(x).toLocaleString(undefined,{maximumSignificantDigits:4});
 document.querySelector('#stats').innerHTML=[['Engines',DATA.leaders.length],['Trials',DATA.records.length],['Passed',DATA.records.filter(r=>r.status==='passed').length],['Cases',new Set(DATA.rows.map(r=>[r.scenario,r.size,r.worlds].join('/'))).size]].map(([label,n])=>`<div class="card"><small>${label}</small><div class="number">${n}</div></div>`).join('');
 document.querySelector('#leaders').innerHTML=DATA.leaders.map((r,i)=>`<div class="card"><small>${r.score==null?'UNRANKED':'#'+(i+1)} · ${esc(r.backend)}</small><h3>${esc(r.engine)}</h3><div class="score">${r.score==null?'—':fmt(r.score)+'×'}</div><small>${r.passed}/${r.total} trials passed${r.score==null?' · incomplete coverage or missing baseline':''}</small></div>`).join('');
 for(const field of ['engine','scenario']){const el=document.querySelector('#'+field);for(const v of [...new Set(DATA.records.map(r=>r[field]))].sort()){const opt=document.createElement('option');opt.textContent=v;el.append(opt)}}
 function memoryCell(r,key){const m=r.memory?.metrics?.[key];return m?.status==='available'?fmt(m.peak_bytes/1048576):'—'}
-function draw(){document.querySelector('#trials').innerHTML=DATA.records.filter(r=>['engine','scenario','status'].every(k=>!document.querySelector('#'+k).value||r[k]===document.querySelector('#'+k).value)).map(r=>`<tr><td>${esc(r.engine)} <small>${esc(r.backend)}</small></td><td>${esc(r.scenario)}</td><td>${r.size} × ${r.worlds}</td><td>${r.seed} / ${r.repeat}</td><td>${fmt(r.ms_per_step)}</td><td>${fmt(r.gpu_ms_per_step)}</td><td title="${esc(r.gpu_timing?.reason||[r.gpu_timing?.method,r.gpu_timing?.scope].filter(Boolean).join(' / '))}">${esc(r.gpu_timing?.status||'not_collected')}</td><td>${fmt(r.world_steps_per_second)}</td><td>${memoryCell(r,'ram')}</td><td>${memoryCell(r,'footprint')}</td><td>${memoryCell(r,'gpu')}</td><td title="${esc(r.memory?.reason||'Independent replay; see memory result for counter coverage')}">${esc(r.memory?.status||'not_collected')}</td><td class="${r.status}" title="${esc(r.error||r.validation?.reasons.join('; ')||'')}">${r.status}</td><td><a href="${r.directory}/job.json">job</a> · <a href="${r.directory}/adapter.log">log</a>${['passed','invalid'].includes(r.status)?` · <a href="${r.directory}/result.json">result</a>`:''}${['available','unavailable','error'].includes(r.gpu_timing?.status)?` · <a href="${r.directory}/gpu.log">GPU log</a>`:''}${['available','unavailable'].includes(r.gpu_timing?.status)?` · <a href="${r.directory}/gpu-result.json">GPU result</a>`:''}${['complete','error'].includes(r.memory?.status)?` · <a href="${r.directory}/memory.log">memory log</a>`:''}${r.memory?.status==='complete'?` · <a href="${r.directory}/memory-result.json">memory result</a>`:''}</td></tr>`).join('')}
+function draw(){document.querySelector('#trials').innerHTML=DATA.records.filter(r=>['engine','scenario','status'].every(k=>!document.querySelector('#'+k).value||r[k]===document.querySelector('#'+k).value)).map(r=>`<tr><td>${esc(r.engine)} <small>${esc(r.backend)}</small></td><td>${esc(r.scenario)}</td><td>${r.size} × ${r.worlds}</td><td>${r.seed} / ${r.repeat}</td><td>${fmt(r.ms_per_step)}</td><td>${fmt(r.gpu_ms_per_step)}</td><td title="${esc(r.gpu_timing?.reason||[r.gpu_timing?.method,r.gpu_timing?.scope].filter(Boolean).join(' / '))}">${esc(r.gpu_timing?.status||'not_collected')}</td><td>${fmt(r.world_steps_per_second)}</td><td>${fmt(r.setup_seconds)}</td><td>${fmt(r.warmup_seconds)}</td><td>${memoryCell(r,'ram')}</td><td>${memoryCell(r,'footprint')}</td><td>${memoryCell(r,'gpu')}</td><td title="${esc(r.memory?.reason||'Independent replay; see memory result for counter coverage')}">${esc(r.memory?.status||'not_collected')}</td><td class="${r.status}" title="${esc(r.error||r.validation?.reasons.join('; ')||'')}">${esc(r.outcome_label||r.status)}</td><td><a href="${r.directory}/job.json">job</a> · <a href="${r.directory}/adapter.log">log</a>${['passed','invalid'].includes(r.status)?` · <a href="${r.directory}/result.json">result</a>`:''}${['available','unavailable','error'].includes(r.gpu_timing?.status)?` · <a href="${r.directory}/gpu.log">GPU log</a>`:''}${['available','unavailable'].includes(r.gpu_timing?.status)?` · <a href="${r.directory}/gpu-result.json">GPU result</a>`:''}${['complete','error'].includes(r.memory?.status)?` · <a href="${r.directory}/memory.log">memory log</a>`:''}${r.memory?.status==='complete'?` · <a href="${r.directory}/memory-result.json">memory result</a>`:''}</td></tr>`).join('')}
 for(const el of document.querySelectorAll('select'))el.addEventListener('change',draw);draw();document.querySelector('#metadata').textContent=JSON.stringify(DATA.metadata,null,2);</script></html>"""
 
 
@@ -752,6 +791,7 @@ def main():
         for metric in ["ram", "gpu", "footprint"]
         for f in curves(rows, out, records, metric)
     ]
+    startup_files = curves(rows, out, records, startup=True)
     memory_coverage = {}
     for record in records:
         memory = record.get(
@@ -814,6 +854,11 @@ def main():
     gpu_status += "</tbody></table>"
     notes_path = out / "run-notes.json"
     notes = json.loads(notes_path.read_text()) if notes_path.exists() else []
+    remeasured = [r for r in records if r.get("memory_remeasured")]
+    for reason in sorted({r["memory_remeasured"]["reason"] for r in remeasured}):
+        ids = [r["id"] for r in remeasured if r["memory_remeasured"]["reason"] == reason]
+        notes.append(f"Memory of {len(ids)} trial(s) was remeasured after their timing run, in a separate replay: {reason} "
+                     f"Their timings are unchanged; the earlier measurement is kept in results.json ({', '.join(ids)}).")
     if any(s.startswith("mpm_") for s in metadata["suite"]["scenarios"]):
         notes = ["Single-environment MPM. Size is material-point count. Every engine receives the same particle positions, masses, grid spacing, gravity, substeps and simulated horizon. Constitutive laws, grids and collision discretizations differ; this is not an accuracy-equated comparison. The baseline is " + baseline + ".",
                  "MPM throughput plots show particle-steps per second. Snapshots display material points as spheres; their rigid orientation fields are protocol padding. Newton MPM uses SolverImplicitMPM, independently of its rigid-body MuJoCo Warp backend.", *notes]
@@ -848,6 +893,14 @@ def main():
                 for f in memory_files
             )
             or '<p class="muted">No complete memory measurements in this run.</p>',
+        )
+        .replace(
+            "__STARTUP_CURVES__",
+            "".join(
+                f'<a href="{f}"><img src="{f}" alt="Setup and warmup curve, lower is better"></a>'
+                for f in startup_files
+            )
+            or '<p class="muted">No case has complete passing coverage yet.</p>',
         )
         .replace("__RUN_NOTES__", notes_html)
         .replace(
