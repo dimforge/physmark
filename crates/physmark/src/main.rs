@@ -704,12 +704,14 @@ fn validate_resume_metadata(previous: &Value, current: &Value) -> Result<()> {
         );
     }
     // Timeouts may change: they decide which slow cases finish, not how a finished trial was
-    // measured. Everything else in the suite must match.
+    // measured. Engines may be added, keeping the original ones and their backends, so a run
+    // can be extended with newly wired engines. Everything else in the suite must match.
     let suite = |m: &Value| {
         let mut s = m.get("suite").cloned().unwrap_or(Value::Null);
         if let Some(o) = s.as_object_mut() {
             o.remove("timeout_seconds");
             o.remove("cpu_timeout_seconds");
+            o.remove("engines");
         }
         s
     };
@@ -717,9 +719,17 @@ fn validate_resume_metadata(previous: &Value, current: &Value) -> Result<()> {
         previous.get("suite").is_some() && suite(previous) == suite(current),
         "cannot resume: suite changed"
     );
+    let engines = |m: &Value| m["suite"]["engines"].as_array().cloned().unwrap_or_default();
+    for engine in engines(previous) {
+        ensure!(engines(current).contains(&engine), "cannot resume: engine {engine} removed");
+        let name = engine.as_str().unwrap_or_default();
+        ensure!(
+            previous["backends"][name] == current["backends"][name],
+            "cannot resume: backend of {name} changed"
+        );
+    }
     for key in [
         "schema_version",
-        "backends",
         "threads_requested",
         "source_pins",
         "lock_hash",
@@ -903,8 +913,15 @@ fn run(
         "when enabled: macOS adapter physical footprint sampled once per second by the controller; exceeding the limit terminates the trial"
     );
     let mut records: Vec<Value> = if resume {
-        let previous: Value = serde_json::from_slice(&fs::read(out.join("metadata.json"))?)?;
+        let mut previous: Value = serde_json::from_slice(&fs::read(out.join("metadata.json"))?)?;
         validate_resume_metadata(&previous, &metadata)?;
+        // A resume that adds engines extends the run: record them, keeping the original
+        // provenance (each resume's full metadata is in resume-history.json).
+        if previous["suite"]["engines"] != metadata["suite"]["engines"] {
+            previous["suite"]["engines"] = metadata["suite"]["engines"].clone();
+            previous["backends"] = metadata["backends"].clone();
+            atomic_json(&out.join("metadata.json"), &previous)?;
+        }
         let history_path = out.join("resume-history.json");
         let mut history: Vec<Value> = if history_path.exists() {
             serde_json::from_slice(&fs::read(&history_path)?)?
@@ -1473,7 +1490,7 @@ mod tests {
     }
     #[test]
     fn resume_requires_identical_workload_pins_and_machine() {
-        let original = json!({"schema_version":1,"suite":{"sizes":[8,128,1024],"repeats":3},
+        let original = json!({"schema_version":1,"suite":{"sizes":[8,128,1024],"repeats":3,"engines":["nexus"]},
             "backends":{"nexus":"metal"},"threads_requested":1,"source_pins":{"nexus":"abc"},
             "lock_hash":"abc","python_packages":"packages","hardware":{"cpu":"test"},"rust":"1.98"});
         validate_resume_metadata(&original, &original).unwrap();
@@ -1497,6 +1514,13 @@ mod tests {
         retimed["suite"]["timeout_seconds"] = json!(300);
         retimed["scheduling"] = json!("ascending environment count, then size");
         validate_resume_metadata(&original, &retimed).unwrap();
+        let mut extended = original.clone();
+        extended["suite"]["engines"] = json!(["nexus", "isaac"]);
+        extended["backends"] = json!({"nexus":"metal","isaac":"cuda"});
+        validate_resume_metadata(&original, &extended).unwrap();
+        let mut rebacked = original.clone();
+        rebacked["backends"] = json!({"nexus":"cuda"});
+        assert!(validate_resume_metadata(&original, &rebacked).is_err());
         let mut resized = original.clone();
         resized["suite"]["repeats"] = json!(1);
         assert!(validate_resume_metadata(&original, &resized).is_err());

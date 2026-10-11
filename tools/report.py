@@ -715,6 +715,10 @@ def main():
     out = args.directory.resolve()
     records = json.loads((out / "results.json").read_text())
     metadata = json.loads((out / "metadata.json").read_text())
+    # Engines present in the records but missing from an older metadata file come last.
+    for engine in dict.fromkeys(r["engine"] for r in records):
+        if engine not in metadata["suite"]["engines"]:
+            metadata["suite"]["engines"].append(engine)
     rows = summarize(records, metadata["suite"])
     baseline = metadata["suite"].get("baseline") or "mujoco"
     leaders = leaderboard(rows, metadata["suite"]["engines"], baseline)
