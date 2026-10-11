@@ -984,7 +984,7 @@ fn run(
                 let kind = resource_failure(r["error"].as_str()?)?;
                 (r["engine"] == engine && r["scenario"] == scenario && r["status"] == "error"
                     && r["size"].as_u64()? <= size as u64 && r["worlds"].as_u64()? <= worlds as u64)
-                    .then(|| format!("skipped (likely {kind}): {} failed with {kind} at {} × {}", r["id"], r["size"], r["worlds"]))
+                    .then(|| format!("skipped (likely {kind}): {} failed with {kind} at {} × {}", r["id"].as_str().unwrap_or_default(), r["size"], r["worlds"]))
             })
         } else {
             None
