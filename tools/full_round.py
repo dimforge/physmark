@@ -35,7 +35,7 @@ PARTS = [
     ("mpm", "Material points", "full-mpm.toml", ["nexus", "genesis", "newton"],
      "Elastic and sand from 512 to 195,112 particles (8³ to 58³); one environment; CPIC disabled."),
     ("robot", "Robot environments", "robot.toml", ["rapier", "mujoco", "nexus", "genesis", "newton", "isaac"],
-     "One Go1 quadruped (12 actuators) or Booster T1 humanoid (23 actuators) standing on the ground per environment; 1 through 4,096 independent environments."),
+     "One Go1 quadruped (12 actuators) or Booster T1 humanoid (23 actuators) standing on the ground per environment; 1 through 8,192 independent environments."),
 ]
 NAMES = dict(rapier="Rapier", mujoco="MuJoCo", nexus="Nexus", genesis="Genesis", newton="Newton", mjx="MJX", isaac="Isaac Sim")
 REPOSITORY = "https://github.com/dimforge/physmark"

@@ -197,7 +197,7 @@ Solver/contact approximations differ;
 these are comparable workloads, not claims of identical dynamics.
 
 Scene size is **robots per environment** (currently one); `worlds` sweeps independent
-robots up to 4,096. Each Go1 environment must finish upright, with base height between
+robots up to 8,192. Each Go1 environment must finish upright, with base height between
 0.22 and 0.50 m and horizontal drift below 1 m after at least one simulated second.
 All 13 links must remain present and awake. Failing robots are excluded from timing
 rankings. The initial positions are checked against MuJoCo forward kinematics.
