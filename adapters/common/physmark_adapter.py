@@ -254,6 +254,11 @@ def main(make_sim):
     path = Path(sys.argv[2])
     sims = []
     result = run(job, lambda job: sims.append(make_sim(job)) or sims[-1], path.parent)
+    import math
+
+    if not all(math.isfinite(v) for pose in result["final_poses"] for v in pose):
+        # Otherwise the JSON writer fails on NaN and hides the cause.
+        raise RuntimeError("simulation diverged: final poses contain NaN or infinite values")
     temporary = path.with_suffix(".tmp")
     temporary.write_text(json.dumps(result, allow_nan=False, indent=2))
     temporary.replace(path)
