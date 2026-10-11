@@ -1,6 +1,6 @@
 name = "mpm-smoke"
 engines = ["nexus", "genesis", "newton"]
-scenarios = ["mpm_elastic_drop", "mpm_sand_collapse", "mpm_dam_break"]
+scenarios = ["mpm_elastic_drop", "mpm_sand_collapse"]
 sizes = [512]
 worlds = [1]
 steps = 64

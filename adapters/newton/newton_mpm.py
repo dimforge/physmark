@@ -34,12 +34,9 @@ class NewtonMPM:
                          damping=0., hardening=0., viscosity=0., dilatancy=0., yield_pressure=1e15)
             if cfg["material"] == "elastic":
                 props.update(friction=0., yield_stress=1e15, tensile_yield_ratio=1.)
-            elif cfg["material"] == "sand":
+            else:
                 props.update(friction=math.tan(math.radians(cfg["friction_angle_degrees"])),
                              yield_stress=0., tensile_yield_ratio=0.)
-            else:
-                props.update(young_modulus=3 * cfg["bulk_modulus"] * (1 - 2 * cfg["poisson_ratio"]),
-                             friction=0., yield_stress=0., tensile_yield_ratio=0.)
             for name, value in props.items():
                 getattr(self.model.mpm, name).fill_(value)
             self.config = newton.solvers.SolverImplicitMPM.Config()

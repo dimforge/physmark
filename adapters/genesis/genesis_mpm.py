@@ -32,15 +32,9 @@ class GenesisMPM:
         if cfg["material"] == "elastic":
             material = gs.materials.MPM.Elastic(**params, model="neohooken")
             law = "Neo-Hookean"
-        elif cfg["material"] == "sand":
+        else:
             material = gs.materials.MPM.Sand(**params, friction_angle=cfg["friction_angle_degrees"])
             law = "logarithmic strain / Drucker-Prager, fixed friction angle"
-        else:
-            # Genesis liquid pressure is lambda * J * (J-1); match its tangent at J=1.
-            nu = cfg["poisson_ratio"]
-            params["E"] = cfg["bulk_modulus"] * (1 + nu) * (1 - 2 * nu) / nu
-            material = gs.materials.MPM.Liquid(**params, viscous=False)
-            law = "lambda J(J-1) pressure, zero shear"
         self.entity = self.scene.add_entity(gs.morphs.Nowhere(n_particles=job["scene"]["size"]),
             material=material, surface=gs.surfaces.Default())
         self.scene.build()  # One actual environment, no batched axis.

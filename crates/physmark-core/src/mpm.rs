@@ -24,7 +24,7 @@ pub struct MpmConfig {
 impl MpmConfig {
     pub fn validate(&self, scene: &Scene) -> Result<()> {
         ensure!(
-            ["elastic", "sand", "liquid"].contains(&self.material.as_str()),
+            ["elastic", "sand"].contains(&self.material.as_str()),
             "unknown MPM material"
         );
         ensure!(
@@ -92,7 +92,6 @@ pub fn scene(name: &str, size: usize, seed: u64, dt: f64) -> Result<Scene> {
     let material = match name {
         "mpm_elastic_drop" => "elastic",
         "mpm_sand_collapse" => "sand",
-        "mpm_dam_break" => "liquid",
         _ => anyhow::bail!("unknown MPM scenario"),
     };
     let cfg = MpmConfig {
@@ -104,8 +103,7 @@ pub fn scene(name: &str, size: usize, seed: u64, dt: f64) -> Result<Scene> {
         poisson_ratio: 0.2,
         bulk_modulus: 10_000.,
         friction_angle_degrees: 30.,
-        // Genesis's rigid coupling requires friction >= 0.01; keep it equal in every engine.
-        boundary_friction: if material == "liquid" { 0.01 } else { 0.5 },
+        boundary_friction: 0.5,
         substeps: 20,
         // Genesis pads its grid boundary inward. Keep that numerical boundary
         // outside the shared colliders, even in the coarsest smoke scene.
@@ -179,7 +177,7 @@ mod tests {
     }
     #[test]
     fn canonical_particles_preserve_volume_mass_and_resolution() {
-        for name in ["mpm_elastic_drop", "mpm_sand_collapse", "mpm_dam_break"] {
+        for name in ["mpm_elastic_drop", "mpm_sand_collapse"] {
             for size in [64, 512, 4096, 32768] {
                 let s = scene(name, size, 42, 1. / 240.).unwrap();
                 assert_eq!(hash(&s), hash(&scene(name, size, 42, 1. / 240.).unwrap()));
@@ -194,7 +192,7 @@ mod tests {
             }
         }
         // The largest suite scale, 58³ particles, keeps the same volume and passes the CFL guard.
-        for name in ["mpm_elastic_drop", "mpm_sand_collapse", "mpm_dam_break"] {
+        for name in ["mpm_elastic_drop", "mpm_sand_collapse"] {
             let s = scene(name, 195_112, 42, 1. / 240.).unwrap();
             let mass: f64 = s.bodies.iter().filter(|b| b.dynamic).map(|b| b.mass).sum();
             assert!((mass - 64.).abs() < 1e-6);

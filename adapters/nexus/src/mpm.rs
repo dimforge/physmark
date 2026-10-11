@@ -13,8 +13,6 @@ pub async fn state(job: &Job, backend: &GpuBackend) -> Result<NexusState> {
         "sand" => {
             ParticleModel::sand_neo_hookean(cfg.young_modulus as f32, cfg.poisson_ratio as f32)
         }
-        // Match the initial bulk modulus: dp/dJ at J=1 is gamma * the Tait coefficient.
-        "liquid" => ParticleModel::fluid((cfg.bulk_modulus / 7.) as f32, 7., 0.),
         _ => bail!("unsupported MPM material"),
     };
     if let ParticleModel::SandNeoHookean(ref mut sand) = model {
@@ -76,7 +74,7 @@ pub fn ensure_cpic_disabled(state: &NexusState) -> Result<()> {
 }
 pub fn settings(cfg: &MpmConfig) -> serde_json::Value {
     serde_json::json!({"solver":"Nexus MLS-MPM", "material":cfg.material, "mpm":cfg,
-        "constitutive_law":match cfg.material.as_str() { "elastic"=>"Neo-Hookean", "sand"=>"Neo-Hookean / Drucker-Prager, fixed friction angle", _=>"Tait EOS, gamma=7, zero viscosity" },
+        "constitutive_law":if cfg.material == "elastic" { "Neo-Hookean" } else { "Neo-Hookean / Drucker-Prager, fixed friction angle" },
         "grid":"sparse hashed", "transfer":"APIC", "precision":"f32", "sleeping":false,
         "world_execution":"single", "graph_capture":false, "cpic":false,
         "comparison":"common initial material parameters, different constitutive/discretization implementations"})

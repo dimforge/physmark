@@ -22,7 +22,6 @@ pub const SCENARIOS: &[&str] = &[
     "friction_ramp",
     "mpm_elastic_drop",
     "mpm_sand_collapse",
-    "mpm_dam_break",
     "robot_go1",
     "robot_t1",
 ];

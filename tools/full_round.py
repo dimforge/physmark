@@ -32,7 +32,7 @@ PARTS = [
     ("stacks-large", "Large brick structures", "full-stacks-large.toml", ["rapier", "mujoco", "nexus", "genesis", "isaac"],
      "The Nexus 110K brick ring and 500K pyramids, each also at the other's scale; no replay capture."),
     ("mpm", "Material points", "full-mpm.toml", ["nexus", "genesis", "newton"],
-     "Elastic, sand and liquid from 512 to 195,112 particles (8³ to 58³); one environment; CPIC disabled."),
+     "Elastic and sand from 512 to 195,112 particles (8³ to 58³); one environment; CPIC disabled."),
     ("environments", "Brick structure environments", "full-environments.toml", RIGID,
      "128- and 466-body brick rings and pyramids across 1, 4, 16, 64, 256, 1,024 and 4,096 environments."),
     ("robot", "Robot environments", "robot.toml", ["rapier", "mujoco", "nexus", "genesis", "newton", "isaac"],

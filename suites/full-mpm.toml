@@ -1,6 +1,6 @@
 name = "mpm"
 engines = ["nexus", "genesis"]
-scenarios = ["mpm_elastic_drop", "mpm_sand_collapse", "mpm_dam_break"]
+scenarios = ["mpm_elastic_drop", "mpm_sand_collapse"]
 sizes = [512, 4096, 32768, 64000, 110592, 195112]
 worlds = [1]
 steps = 120
