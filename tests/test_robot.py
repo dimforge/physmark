@@ -20,7 +20,7 @@ def test_robot_keyframe_controls_stand_up_and_reset_two_independent_environments
         pytest.skip('fetch the pinned Menagerie first')
     scene = make_scene(ROOT)
     assert scene['size'] == 13 and scene['robot']['ctrl'] == [0, .9, -1.8]*4
-    sim = Mujoco(dict(scene=scene, backend='cpu', worlds=2), mjcf(scene))
+    sim = Mujoco(dict(scene=scene, backend='cpu', worlds=2, threads=2), mjcf(scene))
     initial = np.array(sim.poses())
     sim.advance(480)
     final = np.array(sim.poses()).reshape(2, 13, 7)
@@ -47,7 +47,7 @@ def test_humanoid_stands_on_the_ground_from_a_crouch():
     scene = make_scene(ROOT, scenario='robot_t1')
     robot = scene['robot']
     assert scene['size'] == 24 and len(robot['ctrl']) == 23 and len(robot['qpos']) == 30
-    sim = Mujoco(dict(scene=scene, backend='cpu', worlds=1), mjcf(scene))
+    sim = Mujoco(dict(scene=scene, backend='cpu', worlds=1, threads=1), mjcf(scene))
     sim.advance(10)
     assert sim.data[0].ncon > 0, 'the feet must touch the ground from the start'
     sim.advance(470)
