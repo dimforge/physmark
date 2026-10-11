@@ -53,7 +53,6 @@ Each part is ranked separately:
 | Brick structures | A brick ring and rows of brick pyramids smashed by rolling spheres, 1,000 to 28,000 bodies |
 | Large brick structures | The same scenes at 110,000 and 505,922 bodies |
 | Material points (MPM) | Elastic and sand, 512 to 195,112 particles |
-| Environment scaling | Brick structures in 1 to 4,096 independent environments |
 | Robots | Go1 quadruped and Booster T1 humanoid standing up on the ground, 1 to 4,096 environments |
 
 The round detects the hardware and picks a backend for each engine. Engines that
