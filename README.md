@@ -9,7 +9,7 @@ engine is built from a pinned upstream commit, runs the same scene with the same
 timestep and mass properties, and is timed over a warmed, synchronized rollout in
 its own process. Each trial is checked for physical sanity, replayed to measure
 GPU time and RAM/GPU memory, and rendered with a shared renderer. The result is an
-offline HTML report with performance curves, a leaderboard, memory tables, and a
+offline HTML report with performance curves and tables, memory tables, and a
 replay video per trial.
 
 Engines: **Rapier**, **Nexus**, **Genesis**, **Newton**, **MuJoCo**, **MJX** and
@@ -74,6 +74,27 @@ first runs a two-step probe trial, and any that fails is skipped too.
 Use `--resume` to continue an interrupted round, `--threads N` to set CPU workers
 (default: up to 8), and `--skip-build` to reuse the current build.
 
+## Publish rounds from several machines
+
+The reports have a platform selector. To compare rounds from different machines,
+add each round to a static site directory:
+
+```sh
+cargo run --release -- site results/site results/full
+```
+
+Each round becomes a self-contained `results/site/<platform>/` directory, listed in
+`results/site/platforms.json`. The platform name and label come from the round's
+hardware (override them with `--id` and `--label`). Per-trial evidence files over
+1 MB (trajectories, scenes, profiler traces) are left out unless you pass
+`--max-evidence-mb`; the reports hide their links.
+
+To add a round from another machine to a deployed site, copy the deployed
+`platforms.json` into the local site directory first, then upload only the new
+`<platform>/` directory and the updated `platforms.json`. The other platforms'
+directories stay untouched. Serve the site over HTTP: opened from disk, a report
+shows only its own platform.
+
 ## Other commands
 
 ```sh
@@ -131,4 +152,4 @@ cargo clippy --workspace --all-targets -- -D warnings
 `crates/physmark-core` holds the scene generator and subprocess protocol,
 `crates/physmark` the controller, `adapters/<engine>` one adapter per engine
 (with shared code in `adapters/common`), `suites/` the benchmark presets and
-`tools/` the build, round and report scripts.
+`tools/` the build, round, report and site scripts.

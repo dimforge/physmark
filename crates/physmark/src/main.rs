@@ -119,6 +119,21 @@ enum Action {
         #[arg(long)]
         no_video: bool,
     },
+    /// Add a finished round to a static site of per-platform reports (or replace its platform),
+    /// so rounds from different machines can be compared and uploaded independently.
+    Site {
+        site: PathBuf,
+        round: PathBuf,
+        /// Platform directory name (default: the round's platform.json).
+        #[arg(long)]
+        id: Option<String>,
+        /// Platform selector label.
+        #[arg(long)]
+        label: Option<String>,
+        /// Leave out larger per-trial evidence files; negative publishes everything.
+        #[arg(long, default_value_t = 1.0, allow_hyphen_values = true)]
+        max_evidence_mb: f64,
+    },
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -905,7 +920,7 @@ fn run(
         "use a new output directory, or --resume with an existing output"
     );
     fs::create_dir_all(out.join("runs"))?;
-    let metadata = json!({"schema_version":1,"created_unix":epoch,"suite":suite,"backends":backend_map,"threads_requested":threads,"source_pins":lock(root)?,"lock_hash":hash(&fs::read(root.join("engines.lock"))?),"build_stamp":stamp(root)?,"harness_commit":command_output(root,"git",&["rev-parse","HEAD"]),"harness_status":command_output(root,"git",&["status","--porcelain"]),"hardware":{"uname":command_output(root,"uname",&["-a"]),"cpu":command_output(root,"sysctl",&["-n","machdep.cpu.brand_string"]),"memory_bytes":command_output(root,"sysctl",&["-n","hw.memsize"]),"os":command_output(root,"sw_vers",&[]),"gpu":command_output(root,"system_profiler",&["SPDisplaysDataType"])},"rust":command_output(root,"rustc",&["--version"]),"python_packages":command_output(root,python(root).to_str().unwrap(),&["-c","import importlib.metadata,json;print(json.dumps({d.metadata['Name']:d.version for d in importlib.metadata.distributions()}))"]),"isaac_python_packages":command_output(root,isaac_python(root).to_str().unwrap(),&["-c","import importlib.metadata,json;print(json.dumps({d.metadata['Name']:d.version for d in importlib.metadata.distributions()}))"]),"timing":"synchronized warmed fixed-horizon rollouts; setup, JIT, reset, readback and rendering excluded; separate process per trial; serial scheduling","gpu_timing":"independent warmed profiling process per passing GPU trial; device durations only; unavailable is never replaced by wall time; raw method and scope per trial; leaderboard remains synchronized wall time","memory":"independent replay per passing trial; OS process RAM high-water and sampled per-process GPU allocation counters; 10 ms target cadence plus synchronized phase boundaries; ends before readback; RAM and GPU can overlap on unified-memory systems","quality":"baseline sanity gates, not accuracy-equated solvers","thread_note":"thread environment limits are requests; GPU and framework worker counts remain engine dependent"});
+    let metadata = json!({"schema_version":1,"created_unix":epoch,"suite":suite,"backends":backend_map,"threads_requested":threads,"source_pins":lock(root)?,"lock_hash":hash(&fs::read(root.join("engines.lock"))?),"build_stamp":stamp(root)?,"harness_commit":command_output(root,"git",&["rev-parse","HEAD"]),"harness_status":command_output(root,"git",&["status","--porcelain"]),"hardware":{"uname":command_output(root,"uname",&["-a"]),"cpu":command_output(root,"sysctl",&["-n","machdep.cpu.brand_string"]),"memory_bytes":command_output(root,"sysctl",&["-n","hw.memsize"]),"os":command_output(root,"sw_vers",&[]),"gpu":command_output(root,"system_profiler",&["SPDisplaysDataType"])},"rust":command_output(root,"rustc",&["--version"]),"python_packages":command_output(root,python(root).to_str().unwrap(),&["-c","import importlib.metadata,json;print(json.dumps({d.metadata['Name']:d.version for d in importlib.metadata.distributions()}))"]),"isaac_python_packages":command_output(root,isaac_python(root).to_str().unwrap(),&["-c","import importlib.metadata,json;print(json.dumps({d.metadata['Name']:d.version for d in importlib.metadata.distributions()}))"]),"timing":"synchronized warmed fixed-horizon rollouts; setup, JIT, reset, readback and rendering excluded; separate process per trial; serial scheduling","gpu_timing":"independent warmed profiling process per passing GPU trial; device durations only; unavailable is never replaced by wall time; raw method and scope per trial; performance tables remain synchronized wall time","memory":"independent replay per passing trial; OS process RAM high-water and sampled per-process GPU allocation counters; 10 ms target cadence plus synchronized phase boundaries; ends before readback; RAM and GPU can overlap on unified-memory systems","quality":"baseline sanity gates, not accuracy-equated solvers","thread_note":"thread environment limits are requests; GPU and framework worker counts remain engine dependent"});
     let mut metadata = metadata;
     metadata["memory_limit_bytes"] = json!(memory_limit_bytes()?);
     metadata["scheduling"] = json!(
@@ -1427,6 +1442,30 @@ fn main() -> Result<()> {
                 c.arg("--retry-known-failures");
             }
             ensure!(c.status()?.success(), "full round failed");
+            Ok(())
+        }
+        Action::Site {
+            site,
+            round,
+            id,
+            label,
+            max_evidence_mb,
+        } => {
+            let cwd = std::env::current_dir()?;
+            let mut c = Command::new(system_python());
+            c.arg(root.join("tools/site.py"))
+                .arg(cwd.join(site))
+                .arg(cwd.join(round))
+                .arg("--max-evidence-mb")
+                .arg(max_evidence_mb.to_string())
+                .current_dir(&root);
+            if let Some(id) = id {
+                c.arg("--id").arg(id);
+            }
+            if let Some(label) = label {
+                c.arg("--label").arg(label);
+            }
+            ensure!(c.status()?.success(), "site publishing failed");
             Ok(())
         }
     }

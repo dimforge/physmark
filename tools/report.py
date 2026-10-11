@@ -13,9 +13,11 @@ import sys
 
 import matplotlib
 
+from site_nav import THEME_HEAD, bar, default_platform
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from matplotlib.ticker import NullFormatter
+from matplotlib.ticker import AutoLocator, FuncFormatter, NullFormatter
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 import numpy as np
 
@@ -178,39 +180,165 @@ def memory_statistics(runs, expected, complete):
     return summary
 
 
-def leaderboard(rows, engines, baseline_engine="mujoco"):
-    cases = {(r["scenario"], r["size"], r["worlds"]) for r in rows}
-    baseline = {
-        (r["scenario"], r["size"], r["worlds"]): r
-        for r in rows
-        if r["engine"] == baseline_engine and r["eligible"]
-    }
-    leaders = []
-    for engine in engines:
-        subset = [r for r in rows if r["engine"] == engine]
-        complete = len(subset) == len(cases) and all(r["eligible"] for r in subset)
-        ratios = [
-            baseline[(r["scenario"], r["size"], r["worlds"])]["median_ms"]
-            / r["median_ms"]
-            for r in subset
-            if r["eligible"] and (r["scenario"], r["size"], r["worlds"]) in baseline
-        ]
-        score = (
-            math.exp(sum(map(math.log, ratios)) / len(ratios))
-            if complete and len(ratios) == len(cases) and ratios
-            else None
-        )
-        leaders.append(
-            dict(
-                engine=engine,
-                backend=subset[0]["backend"] if subset else "?",
-                passed=sum(r["passed"] for r in subset),
-                total=sum(r["total"] for r in subset),
-                complete=complete,
-                score=score,
+def failure_tag(record):
+    """Short reason a trial did not pass. A trailing ? marks a case skipped after a smaller one failed."""
+    reasons = (record.get("validation") or {}).get("reasons") or []
+    text = " ".join([record.get("outcome_label") or "", record.get("error") or "", *reasons]).lower()
+    if "out of memory" in text or "memory limit" in text or "likely oom" in text:
+        tag = "OOM"
+    elif "timed out" in text or "likely timeout" in text:
+        tag = "timeout"
+    elif "nan" in re.findall(r"[a-z]+", text) or "non-finite" in text or "diverged" in text:
+        tag = "NaN"
+    else:
+        return "invalid" if record["status"] == "invalid" else "skipped" if record["status"] == "skipped" else "error"
+    return tag + "?" if record["status"] == "skipped" else tag
+
+
+# Table column order; CPU backends come first, then GPU backends, each in this order.
+ENGINE_ORDER = ["rapier", "mujoco", "nexus", "genesis", "isaac", "mjx", "newton"]
+
+
+def timing_value(record):
+    v = record.get("ms_per_step")
+    return v if record["status"] == "passed" and isinstance(v, (int, float)) and math.isfinite(v) and v > 0 else None
+
+
+def startup_value(record):
+    """Setup + warmup seconds of a passing trial (see startup_statistics)."""
+    parts = [record.get(key) for key in ("setup_seconds", "warmup_seconds")]
+    if record["status"] != "passed" or not all(isinstance(v, (int, float)) and math.isfinite(v) and v >= 0 for v in parts):
+        return None
+    return sum(parts)
+
+
+def memory_value(name):
+    """Peak MiB of one memory metric, from a complete replay of a passing trial."""
+    def value(record):
+        memory = record.get("memory") or {}
+        metric = (memory.get("metrics") or {}).get(name) or {}
+        if (record["status"] != "passed" or memory.get("status") != "complete"
+                or metric.get("status") != "available" or not isinstance(metric.get("peak_bytes"), int)
+                or metric["peak_bytes"] <= 0):
+            return None
+        return metric["peak_bytes"] / 2**20
+    return value
+
+
+def case_table(records, engines, value, throughput=False):
+    """Median value per case and engine. Engines are grouped CPU then GPU; the lowest median of
+    each group is marked best. A cell without values carries the most common reason."""
+    batching = len({r["worlds"] for r in records}) > 1
+    cases = sorted({(r["scenario"], r["size"], r["worlds"]) for r in records})
+    backends = {e: next((r["backend"] for r in records if r["engine"] == e), None) for e in engines}
+    engines = [e for e in engines if backends[e]]
+    order = sorted(engines, key=lambda e: (backends[e] != "cpu", ENGINE_ORDER.index(e) if e in ENGINE_ORDER else len(ENGINE_ORDER), engines.index(e)))
+    rows = []
+    for scenario, size, worlds in cases:
+        cells = {}
+        for engine in order:
+            runs = [r for r in records if (r["engine"], r["scenario"], r["size"], r["worlds"]) == (engine, scenario, size, worlds)]
+            measured = [(r, value(r)) for r in runs if value(r) is not None]
+            tags = [failure_tag(r) if r["status"] != "passed" else "not measured" for r in runs if value(r) is None]
+            throughputs = [r["world_steps_per_second"] for r, _ in measured if isinstance(r.get("world_steps_per_second"), (int, float))]
+            cells[engine] = dict(
+                passed=len(measured),
+                total=len(runs),
+                median=float(np.median([v for _, v in measured])) if measured else None,
+                world_steps_per_second=float(np.median(throughputs)) if throughput and batching and throughputs else None,
+                # Measured failures take precedence over cases skipped because of them.
+                failure=max(sorted(set(tags)), key=lambda t: (not t.endswith("?"), tags.count(t))) if tags else None,
             )
-        )
-    return sorted(leaders, key=lambda r: -(r["score"] or 0))
+        for gpu in (False, True):
+            group = [e for e in order if (backends[e] != "cpu") == gpu and cells[e]["median"] is not None]
+            best = min(group, key=lambda e: cells[e]["median"]) if group else None
+            for e in order:
+                if (backends[e] != "cpu") == gpu:
+                    cells[e]["best"] = e == best
+        rows.append(dict(scenario=scenario, size=size, worlds=worlds, cells=cells))
+    return dict(engines=order, backends={e: backends[e] for e in order}, batching=batching, rows=rows)
+
+
+def case_table_html(table):
+    batching, order, rows = table["batching"], table["engines"], table["rows"]
+    if not rows or not order:
+        return '<p class="muted">No trials yet.</p>'
+    show_size = not batching or len({r["size"] for r in rows}) > 1
+    gpu = [e for e in order if table["backends"][e] != "cpu"]
+    split = order[len(order) - len(gpu)] if gpu and len(gpu) < len(order) else None
+
+    def number(v):
+        return f"{v:,.0f}" if v >= 1000 else f"{v:.4g}"
+
+    def edge(e):
+        return ' class="split"' if e == split else ""
+
+    leading = 1 + show_size + batching
+    groups = f'<tr><th colspan="{leading}"></th>'
+    if len(gpu) < len(order):
+        groups += f'<th colspan="{len(order) - len(gpu)}" class="group-head">CPU</th>'
+    if gpu:
+        groups += f'<th colspan="{len(gpu)}" class="group-head{" split" if split else ""}">GPU</th>'
+    groups += "</tr>"
+    head = "<tr><th>Scenario</th>" + (f"<th>{html.escape(count_unit(rows[0]['scenario']).capitalize())}</th>" if show_size else "") \
+        + ("<th>Environments</th>" if batching else "")
+    for e in order:
+        head += f'<th{edge(e)}>{html.escape(e)} <small>{html.escape(table["backends"][e])}</small></th>'
+    head += "</tr>"
+    body = ""
+    for index, row in enumerate(rows):
+        span = sum(1 for r in rows if r["scenario"] == row["scenario"])
+        first = index == 0 or rows[index - 1]["scenario"] != row["scenario"]
+        cells = (f'<th rowspan="{span}" scope="rowgroup">{html.escape(row["scenario"].replace("_", " "))}</th>' if first else "")
+        if show_size:
+            cells += f"<td>{row['size']:,}</td>"
+        if batching:
+            cells += f"<td>{row['worlds']:,}</td>"
+        for e in order:
+            c = row["cells"][e]
+            classes = ["split"] if e == split else []
+            if c["median"] is None:
+                text = html.escape(c["failure"]) if c["failure"] else "·"
+                title = f"{c['total']} trial(s), none measured" if c["total"] else "not run"
+                cells += f'<td class="{" ".join(classes + ["fail"])}" title="{title}">{text}</td>'
+                continue
+            text = number(c["median"])
+            if c["world_steps_per_second"] is not None:
+                text += f' <small>({number(c["world_steps_per_second"])}/s)</small>'
+            if c["passed"] < c["total"]:
+                text += f' <small class="fail">({c["passed"]}/{c["total"]}, {html.escape(c["failure"])})</small>'
+            if c["best"]:
+                classes.append("best")
+            attr = f' class="{" ".join(classes)}"' if classes else ""
+            cells += f"<td{attr}>{text}</td>"
+        body += f'<tr class="{"group" if first else ""}">{cells}</tr>'
+    return f'<div class="scroll"><table class="perf"><thead>{groups}{head}</thead><tbody>{body}</tbody></table></div>'
+
+
+MEMORY_TABLES = [
+    ("ram", "Peak RAM · resident set (MiB)", False),
+    ("gpu", "Peak GPU / VRAM · sampled (MiB)", True),
+    ("footprint", "Peak physical footprint · macOS (MiB)", False),
+]
+
+
+def memory_tables(records, engines):
+    """One table per memory metric that has any measurement; the GPU table lists GPU engines only."""
+    tables = {}
+    for name, _, gpu_only in MEMORY_TABLES:
+        table = case_table(records, engines, memory_value(name))
+        if gpu_only:
+            keep = [e for e in table["engines"] if table["backends"][e] != "cpu"]
+            table["engines"], table["backends"] = keep, {e: table["backends"][e] for e in keep}
+        if any(row["cells"][e]["median"] is not None for row in table["rows"] for e in table["engines"]):
+            tables[name] = table
+    return tables
+
+
+def memory_tables_html(tables):
+    return "".join(f"<h3>{html.escape(title)}</h3>{case_table_html(tables[name])}"
+                   for name, title, _ in MEMORY_TABLES if name in tables) \
+        or '<p class="muted">No complete memory measurements in this run.</p>'
 
 
 def curves(rows, out, records=(), memory_metric=None, startup=False):
@@ -280,6 +408,7 @@ def curves(rows, out, records=(), memory_metric=None, startup=False):
         )
         for throughput in [False, True] if (batching or scenario.startswith("mpm_")) and not memory_metric and not startup else [False]:
             fig, ax = plt.subplots(figsize=(9, 5.5), layout="constrained")
+            plotted = []
 
             def plot_values(rs, prefix, style, label, color):
                 def value(r, key):
@@ -291,6 +420,7 @@ def curves(rows, out, records=(), memory_metric=None, startup=False):
                     x, [value(r, "median") for r in rs], style, label=label, color=color
                 )
                 lo, hi = ("p75", "p25") if throughput else ("p25", "p75")
+                plotted.extend(value(r, key) for r in rs for key in ("median", lo, hi))
                 ax.fill_between(
                     x,
                     [value(r, lo) for r in rs],
@@ -418,11 +548,31 @@ def curves(rows, out, records=(), memory_metric=None, startup=False):
             filename = (
                 f"curves/{scenario}-{suffix}{'-throughput' if throughput else ''}"
             )
-            fig.savefig(out / (filename + ".svg"))
-            fig.savefig(out / (filename + ".png"), dpi=150)
+            fig.savefig(out / (filename + "-log.svg"))
+            fig.savefig(out / (filename + "-log.png"), dpi=150)
+            # The same figure on linear axes, starting at zero. The right-hand band again
+            # keeps the preview and legend clear of the final data points.
+            ax.set_xscale("linear")
+            ax.set_yscale("linear")
+            ax.xaxis.set_major_locator(AutoLocator())
+            ax.xaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:,.0f}"))
+            ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:,.0f}" if abs(v) >= 100 else f"{v:g}"))
+            ax.set_xlim(0, requested[-1] * 1.4)
+            ax.set_ylim(0, max(v for v in plotted if v is not None and math.isfinite(v)) * 1.08)
+            fig.savefig(out / (filename + "-linear.svg"))
+            fig.savefig(out / (filename + "-linear.png"), dpi=150)
             plt.close(fig)
-            files.append(filename + ".svg")
+            files.append(filename)
     return files
+
+
+def chart_images(files, alt, empty):
+    """Chart thumbnails for both axis scales; the page's axis toggle swaps them. Clicking enlarges."""
+    return "".join(
+        f'<a class="zoom" href="{f}-linear.svg"><img src="{f}-linear.svg" data-linear="{f}-linear.svg" '
+        f'data-log="{f}-log.svg" alt="{html.escape(alt)}"></a>'
+        for f in files
+    ) or f'<p class="muted">{html.escape(empty)}</p>'
 
 
 def rotation(q):
@@ -656,11 +806,13 @@ def render(record, out, no_video=False):
 
 BRAND_FILES = (
     "physmark-logo.svg",
+    "physmark-logo-light.svg",
     "physmark-icon.svg",
     "favicon-32.png",
     "apple-touch-icon.png",
 )
-BRAND_LOGO = '<div class="brand"><img src="assets/physmark-logo.svg" width="288" height="65" alt="PhysMark."></div>'
+BRAND_LOGO = ('<div class="brand"><img class="logo-dark" src="assets/physmark-logo.svg" width="288" height="65" alt="PhysMark.">'
+              '<img class="logo-light" src="assets/physmark-logo-light.svg" width="288" height="65" alt="PhysMark."></div>')
 BRAND_HEAD = """<!-- physmark-branding:start -->
 <link rel="icon" type="image/png" sizes="32x32" href="assets/favicon-32.png">
 <link rel="icon" type="image/svg+xml" sizes="any" href="assets/physmark-icon.svg">
@@ -696,15 +848,19 @@ def brand_report(page, out):
 
 HTML = """<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>PhysMark — __TITLE__</title>
 __BRAND_HEAD__
-<style>:root{color-scheme:dark;--bg:#0d141b;--panel:#17222e;--line:#304252;--text:#eaf1f7;--muted:#a5b8c7;--accent:#41dcc3}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.6 system-ui,sans-serif}main{max-width:1400px;margin:auto;padding:38px}header{display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--line);padding-bottom:28px}.brand{font-size:30px;font-weight:750;letter-spacing:-1px}small,.muted{color:var(--muted)}h1{font-size:42px;letter-spacing:-1.5px;margin:30px 0 8px}h2{font-size:22px;margin-top:38px}p{max-width:970px}a{color:var(--accent)}.stats,.leaders,.gallery,.charts{display:grid;gap:16px;grid-template-columns:repeat(auto-fit,minmax(240px,1fr))}.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:22px}.number{font-size:30px;font-weight:700}.leaders .score{font-size:34px;font-weight:750;color:var(--accent)}table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}th,td{text-align:left;padding:11px;border-bottom:1px solid var(--line);white-space:nowrap}th{color:var(--muted);font-weight:500}select,input{background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:10px;font:inherit;margin:0 8px 12px 0}.scroll{overflow:auto}.passed{color:#52dfb1}.error,.invalid{color:#ff8d95}.charts{grid-template-columns:repeat(auto-fit,minmax(400px,1fr))}.charts img{width:100%;background:white;border-radius:8px}.gallery{grid-template-columns:repeat(auto-fit,minmax(300px,1fr))}.gallery video,.gallery img{width:100%;border-radius:8px}.gallery .card{padding:12px}.scene-section{margin-top:28px;padding-top:20px;border-top:1px solid var(--line)}.scene-section h3{font-size:20px;margin:0 0 4px}.scene-section>p{margin:0 0 16px}.tag{display:inline-block;border:1px solid var(--line);padding:3px 9px;border-radius:16px;font-size:12px}details{margin-top:24px}pre{white-space:pre-wrap;overflow-wrap:anywhere;color:var(--muted);font-size:12px}footer{margin-top:50px;border-top:1px solid var(--line);padding-top:22px;color:var(--muted)}@media(max-width:650px){main{padding:20px}h1{font-size:32px}.charts{grid-template-columns:1fr}header{display:block}}</style>
-<main><header>__BRAND_LOGO__<div class="muted">Physics, measured. <span class="tag">LOCAL BENCHMARK</span></div></header><h1>__TITLE__</h1><p class="muted">__HARDWARE__ · __DATE__<br>Synchronized physics stepping. Rendering and compilation excluded. Sleeping disabled.</p><div class="stats" id="stats"></div>__RUN_NOTES__<h2>Leaderboard · synchronized time</h2><p class="muted">Geometric mean speed relative to __BASELINE__ across every case in this suite (higher is faster). A score requires every requested trial and every baseline case to pass. These are baseline sanity checks, not matched-accuracy results. CPU and GPU entries are labelled separately.</p><div class="leaders" id="leaders"></div><h2>Performance curves</h2><p class="muted">Solid lines: synchronized wall time. Dashed lines: device timestamps from an independent warmed replay. Time covers a simulation step across all environments. Throughput is environments × 1,000 / milliseconds per batch step. Shading shows the timing 25th–75th percentiles across repeats and seeds, inverted for throughput. Each metric requires complete coverage. GPU scopes differ (pass sums, activity sums or activity unions); consult the table below. Profiling may alter scheduling; instrumented GPU times can exceed unprofiled synchronized times. The leaderboard uses only synchronized times.</p><div class="charts">__CURVES__</div><h2>GPU timing coverage</h2><div class="scroll">__GPU_STATUS__</div><h2>RAM and GPU memory · lower is better</h2><p class="muted">Separate memory replays preserve the timing measurements. RAM is the operating system’s process resident-set high-water mark; macOS physical footprint is also reported. GPU / VRAM is the sampled peak of native per-process device counters (10 ms target polling plus synchronized phase boundaries). Peaks cover setup, warmup, reset and rollout, ending before final readback and rendering. They include runtime, compilation caches and allocator pools, not just body data. Sampling can miss brief GPU peaks. Apple Silicon uses unified memory: GPU allocations and process RAM overlap and must not be added. Metal reports allocated resources; NVIDIA NVML reports per-process device memory, including context overhead. Different counter scopes are not interchangeable. Missing measurements are never inferred from timings or old results.</p><div class="charts">__MEMORY_CURVES__</div><div class="scroll">__MEMORY_STATUS__</div><h2>Time to first measured step · lower is better</h2><p class="muted">Setup (building the scene in a fresh process, including engine imports and any compilation done at build time) plus warmup (the untimed trajectory before the measured one, where lazily compiling engines compile their kernels). Engines compile at different points, so only the sum compares across engines. Process launch and interpreter start are excluded. Compilation caches persist between trials, so cold and warm starts mix; shading shows the 25th–75th percentiles across repeats.</p><div class="charts">__STARTUP_CURVES__</div><h2>Trials</h2><select id="engine"><option value="">All engines</option></select><select id="scenario"><option value="">All scenarios</option></select><select id="status"><option value="">All outcomes</option><option>passed</option><option>invalid</option><option>error</option><option>skipped</option></select><div class="scroll"><table><thead><tr><th>Engine / backend</th><th>Scenario</th><th>__COUNT_UNIT__ × worlds</th><th>Seed / repeat</th><th>Sync ms / step</th><th>GPU ms / step</th><th>GPU timing</th><th>World steps / s</th><th>Setup s</th><th>Warmup s</th><th>Peak RAM RSS MiB</th><th>Peak footprint MiB</th><th>GPU peak MiB (sampled)</th><th>Memory</th><th>Outcome</th><th>Evidence</th></tr></thead><tbody id="trials"></tbody></table></div><h2>Simulation gallery</h2><p class="muted">Independent untimed replay, rendered by the same renderer and camera rules. Batched cases show world 0. Videos play at simulated time.</p><div id="simulation-gallery">__GALLERY__</div><details><summary>Methodology, source pins and machine metadata</summary><pre id="metadata"></pre></details><footer><a href="results.json">Raw trials</a> · <a href="summary.json">Summary statistics</a> · <a href="metadata.json">Provenance</a> · PhysMark protocol v1__ROBOT_LICENSE__<br>No single score establishes physical accuracy. Inspect solver settings, validation errors, coverage and simulations alongside timing.</footer></main>
+__THEME_HEAD__
+<style>*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.6 system-ui,sans-serif}main{max-width:1400px;margin:auto;padding:38px}header{display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--line);padding-bottom:28px}.brand{font-size:30px;font-weight:750;letter-spacing:-1px}small,.muted{color:var(--muted)}h1{font-size:42px;letter-spacing:-1.5px;margin:30px 0 8px}h2{font-size:22px;margin-top:38px}p{max-width:970px}a{color:var(--accent)}.stats,.gallery,.charts{display:grid;gap:16px;grid-template-columns:repeat(auto-fit,minmax(240px,1fr))}.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:22px}.number{font-size:30px;font-weight:700}table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}th,td{text-align:left;padding:11px;border-bottom:1px solid var(--line);white-space:nowrap}th{color:var(--muted);font-weight:500}select,input{background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:10px;font:inherit;margin:0 8px 12px 0}.scroll{overflow:auto}.passed{color:var(--good)}.error,.invalid{color:var(--bad)}.charts{grid-template-columns:repeat(auto-fit,minmax(400px,1fr))}.charts img{width:100%;background:white;border-radius:8px}.gallery{grid-template-columns:repeat(auto-fit,minmax(300px,1fr))}.gallery video,.gallery img{width:100%;border-radius:8px}.gallery .card{padding:12px}.scene-section{margin-top:28px;padding-top:20px;border-top:1px solid var(--line)}.scene-section h3{font-size:20px;margin:0 0 4px}.scene-section>p{margin:0 0 16px}.tag{display:inline-block;border:1px solid var(--line);padding:3px 9px;border-radius:16px;font-size:12px}details{margin-top:24px}details.trials>summary{font-size:22px;font-weight:700;cursor:pointer;margin:38px 0 14px}details.trials>summary small{font-size:15px;font-weight:400;color:var(--muted)}.zoom{display:block;cursor:zoom-in}.perf th,.perf td{padding:8px 10px}.perf td.best{font-weight:750;color:var(--accent)}.perf .fail{color:var(--bad)}.perf tr.group>*{border-top:2px solid var(--line)}.perf .split{border-left:2px solid var(--muted)}.perf .group-head{text-align:center;color:var(--text);font-weight:600;letter-spacing:1px;border-bottom:none}h3{font-size:17px;margin:26px 0 8px}.perf th[scope=rowgroup]{color:var(--text);font-weight:600;vertical-align:top}#lightbox{position:fixed;inset:0;z-index:50;display:flex;align-items:center;justify-content:center;padding:3vmin;background:#000c;cursor:zoom-out}#lightbox[hidden]{display:none}#lightbox img{max-width:100%;max-height:100%;height:auto;border-radius:8px;background:white;box-shadow:0 10px 40px #000a}pre{white-space:pre-wrap;overflow-wrap:anywhere;color:var(--muted);font-size:12px}footer{margin-top:50px;border-top:1px solid var(--line);padding-top:22px;color:var(--muted)}@media(max-width:650px){main{padding:20px}h1{font-size:32px}.charts{grid-template-columns:1fr}header{display:block}}</style>
+<main><header>__BRAND_LOGO__<div class="muted">Physics, measured. <span class="tag">LOCAL BENCHMARK</span></div></header>__NAV__<h1>__TITLE__</h1><p class="muted">__HARDWARE__ · __DATE__<br>Synchronized physics stepping. Rendering and compilation excluded. Sleeping disabled.</p><div class="stats" id="stats"></div>__RUN_NOTES__<h2>Performance curves</h2><p class="muted">Solid lines: synchronized wall time. Dashed lines: device timestamps from an independent warmed replay. Time covers a simulation step across all environments. Throughput is environments × 1,000 / milliseconds per batch step. Shading shows the timing 25th–75th percentiles across repeats and seeds, inverted for throughput. Each metric requires complete coverage. GPU scopes differ (pass sums, activity sums or activity unions); each trial's method and scope appear in the trials table. Profiling may alter scheduling; instrumented GPU times can exceed unprofiled synchronized times. The axes toggle at the top switches every chart between linear and logarithmic scales; click a chart to enlarge it.</p><div class="charts">__CURVES__</div><h2>Performance table</h2><p class="muted">Median synchronized milliseconds per step across all environments (lower is better)__THROUGHPUT_NOTE__. Bold marks the fastest CPU engine and the fastest GPU engine of each case. (k/n, reason) marks cases where only k of n trials passed. Failure reasons: invalid (validation gate), OOM, timeout, NaN (diverged) and error; a trailing ? marks a case skipped after a smaller one failed that way. · means not run. These are baseline sanity checks, not matched-accuracy results; CPU and GPU backends are labelled.</p>__PERF_TABLE__<h2>RAM and GPU memory · lower is better</h2><p class="muted">Separate memory replays preserve the timing measurements. RAM is the operating system’s process resident-set high-water mark; macOS physical footprint is also reported. GPU / VRAM is the sampled peak of native per-process device counters (10 ms target polling plus synchronized phase boundaries). Peaks cover setup, warmup, reset and rollout, ending before final readback and rendering. They include runtime, compilation caches and allocator pools, not just body data. Sampling can miss brief GPU peaks. Apple Silicon uses unified memory: GPU allocations and process RAM overlap and must not be added. Metal reports allocated resources; NVIDIA NVML reports per-process device memory, including context overhead. Different counter scopes are not interchangeable. Missing measurements are never inferred from timings or old results.</p><div class="charts">__MEMORY_CURVES__</div><p class="muted">Median peak per case and engine across repeats, in MiB (lower is better). Bold marks the lowest CPU engine and the lowest GPU engine of each case. (k/n, reason) marks cases where only k of n trials have a measurement; reasons are those of the performance table, or not measured when the trial passed but its memory replay has no reading. · means not run. Each trial's counter, scope and reason appear in the trials table and its memory result.</p>__MEMORY_TABLES__<h2>Time to first measured step · lower is better</h2><p class="muted">Setup (building the scene in a fresh process, including engine imports and any compilation done at build time) plus warmup (the untimed trajectory before the measured one, where lazily compiling engines compile their kernels). Engines compile at different points, so only the sum compares across engines. Process launch and interpreter start are excluded. Compilation caches persist between trials, so cold and warm starts mix; shading shows the 25th–75th percentiles across repeats.</p><div class="charts">__STARTUP_CURVES__</div><p class="muted">Median setup + warmup seconds per case and engine across repeats (lower is better). Bold marks the quickest CPU engine and the quickest GPU engine of each case. (k/n, reason) and · read as in the performance table.</p>__STARTUP_TABLE__<details class="trials"><summary>Trials <small>__TRIAL_COUNT__ · every repeat with its timings, memory and evidence</small></summary><select id="engine"><option value="">All engines</option></select><select id="scenario"><option value="">All scenarios</option></select><select id="status"><option value="">All outcomes</option><option>passed</option><option>invalid</option><option>error</option><option>skipped</option></select><div class="scroll"><table><thead><tr><th>Engine / backend</th><th>Scenario</th><th>__COUNT_UNIT__ × worlds</th><th>Seed / repeat</th><th>Sync ms / step</th><th>GPU ms / step</th><th>GPU timing</th><th>World steps / s</th><th>Setup s</th><th>Warmup s</th><th>Peak RAM RSS MiB</th><th>Peak footprint MiB</th><th>GPU peak MiB (sampled)</th><th>Memory</th><th>Outcome</th><th>Evidence</th></tr></thead><tbody id="trials"></tbody></table></div></details><h2>Simulation gallery</h2><p class="muted">Independent untimed replay, rendered by the same renderer and camera rules. Batched cases show world 0. Videos play at simulated time.</p><div id="simulation-gallery">__GALLERY__</div><details><summary>Methodology, source pins and machine metadata</summary><pre id="metadata"></pre></details><footer><a href="results.json">Raw trials</a> · <a href="summary.json">Summary statistics</a> · <a href="metadata.json">Provenance</a> · PhysMark protocol v1__ROBOT_LICENSE__<br>No single score establishes physical accuracy. Inspect solver settings, validation errors, coverage and simulations alongside timing.</footer></main><div id="lightbox" hidden><img alt=""></div>
 <script>const DATA=__DATA__;const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));const fmt=x=>x==null?'—':Number(x).toLocaleString(undefined,{maximumSignificantDigits:4});
-document.querySelector('#stats').innerHTML=[['Engines',DATA.leaders.length],['Trials',DATA.records.length],['Passed',DATA.records.filter(r=>r.status==='passed').length],['Cases',new Set(DATA.rows.map(r=>[r.scenario,r.size,r.worlds].join('/'))).size]].map(([label,n])=>`<div class="card"><small>${label}</small><div class="number">${n}</div></div>`).join('');
-document.querySelector('#leaders').innerHTML=DATA.leaders.map((r,i)=>`<div class="card"><small>${r.score==null?'UNRANKED':'#'+(i+1)} · ${esc(r.backend)}</small><h3>${esc(r.engine)}</h3><div class="score">${r.score==null?'—':fmt(r.score)+'×'}</div><small>${r.passed}/${r.total} trials passed${r.score==null?' · incomplete coverage or missing baseline':''}</small></div>`).join('');
+document.querySelector('#stats').innerHTML=[['Engines',DATA.metadata.suite.engines.length],['Trials',DATA.records.length],['Passed',DATA.records.filter(r=>r.status==='passed').length],['Cases',new Set(DATA.rows.map(r=>[r.scenario,r.size,r.worlds].join('/'))).size]].map(([label,n])=>`<div class="card"><small>${label}</small><div class="number">${n}</div></div>`).join('');
 for(const field of ['engine','scenario']){const el=document.querySelector('#'+field);for(const v of [...new Set(DATA.records.map(r=>r[field]))].sort()){const opt=document.createElement('option');opt.textContent=v;el.append(opt)}}
+let OMITTED=new Set();
 function memoryCell(r,key){const m=r.memory?.metrics?.[key];return m?.status==='available'?fmt(m.peak_bytes/1048576):'—'}
-function draw(){document.querySelector('#trials').innerHTML=DATA.records.filter(r=>['engine','scenario','status'].every(k=>!document.querySelector('#'+k).value||r[k]===document.querySelector('#'+k).value)).map(r=>`<tr><td>${esc(r.engine)} <small>${esc(r.backend)}</small></td><td>${esc(r.scenario)}</td><td>${r.size} × ${r.worlds}</td><td>${r.seed} / ${r.repeat}</td><td>${fmt(r.ms_per_step)}</td><td>${fmt(r.gpu_ms_per_step)}</td><td title="${esc(r.gpu_timing?.reason||[r.gpu_timing?.method,r.gpu_timing?.scope].filter(Boolean).join(' / '))}">${esc(r.gpu_timing?.status||'not_collected')}</td><td>${fmt(r.world_steps_per_second)}</td><td>${fmt(r.setup_seconds)}</td><td>${fmt(r.warmup_seconds)}</td><td>${memoryCell(r,'ram')}</td><td>${memoryCell(r,'footprint')}</td><td>${memoryCell(r,'gpu')}</td><td title="${esc(r.memory?.reason||'Independent replay; see memory result for counter coverage')}">${esc(r.memory?.status||'not_collected')}</td><td class="${r.status}" title="${esc(r.error||r.validation?.reasons.join('; ')||'')}">${esc(r.outcome_label||r.status)}</td><td><a href="${r.directory}/job.json">job</a> · <a href="${r.directory}/adapter.log">log</a>${['passed','invalid'].includes(r.status)?` · <a href="${r.directory}/result.json">result</a>`:''}${['available','unavailable','error'].includes(r.gpu_timing?.status)?` · <a href="${r.directory}/gpu.log">GPU log</a>`:''}${['available','unavailable'].includes(r.gpu_timing?.status)?` · <a href="${r.directory}/gpu-result.json">GPU result</a>`:''}${['complete','error'].includes(r.memory?.status)?` · <a href="${r.directory}/memory.log">memory log</a>`:''}${r.memory?.status==='complete'?` · <a href="${r.directory}/memory-result.json">memory result</a>`:''}</td></tr>`).join('')}
-for(const el of document.querySelectorAll('select'))el.addEventListener('change',draw);draw();document.querySelector('#metadata').textContent=JSON.stringify(DATA.metadata,null,2);</script></html>"""
+function draw(){document.querySelector('#trials').innerHTML=DATA.records.filter(r=>['engine','scenario','status'].every(k=>!document.querySelector('#'+k).value||r[k]===document.querySelector('#'+k).value)).map(r=>`<tr><td>${esc(r.engine)} <small>${esc(r.backend)}</small></td><td>${esc(r.scenario)}</td><td>${r.size} × ${r.worlds}</td><td>${r.seed} / ${r.repeat}</td><td>${fmt(r.ms_per_step)}</td><td>${fmt(r.gpu_ms_per_step)}</td><td title="${esc(r.gpu_timing?.reason||[r.gpu_timing?.method,r.gpu_timing?.scope].filter(Boolean).join(' / '))}">${esc(r.gpu_timing?.status||'not_collected')}</td><td>${fmt(r.world_steps_per_second)}</td><td>${fmt(r.setup_seconds)}</td><td>${fmt(r.warmup_seconds)}</td><td>${memoryCell(r,'ram')}</td><td>${memoryCell(r,'footprint')}</td><td>${memoryCell(r,'gpu')}</td><td title="${esc(r.memory?.reason||'Independent replay; see memory result for counter coverage')}">${esc(r.memory?.status||'not_collected')}</td><td class="${r.status}" title="${esc(r.error||r.validation?.reasons.join('; ')||'')}">${esc(r.outcome_label||r.status)}</td><td>${[['job.json','job',true],['adapter.log','log',true],['result.json','result',['passed','invalid'].includes(r.status)],['gpu.log','GPU log',['available','unavailable','error'].includes(r.gpu_timing?.status)],['gpu-result.json','GPU result',['available','unavailable'].includes(r.gpu_timing?.status)],['memory.log','memory log',['complete','error'].includes(r.memory?.status)],['memory-result.json','memory result',r.memory?.status==='complete']].filter(([f,,shown])=>shown&&!OMITTED.has(r.directory+'/'+f)).map(([f,label])=>`<a href="${r.directory}/${f}">${label}</a>`).join(' · ')||'—'}</td></tr>`).join('')}
+for(const el of document.querySelectorAll('details.trials select'))el.addEventListener('change',draw);draw();
+// A published site may leave out large evidence files (physmark site); hide their links.
+fetch('omitted.json').then(r=>r.ok?r.json():[]).then(list=>{OMITTED=new Set(list);for(const a of document.querySelectorAll('a.evidence'))if(OMITTED.has(a.getAttribute('href')))a.replaceWith(Object.assign(document.createElement('span'),{className:'muted',textContent:a.textContent+' (not published)'}));draw()},()=>{});document.querySelector('#metadata').textContent=JSON.stringify(DATA.metadata,null,2);
+const box=document.querySelector('#lightbox'),boxImg=box.querySelector('img');boxImg.addEventListener('load',()=>{const w=boxImg.naturalWidth,h=boxImg.naturalHeight;if(w&&h)boxImg.style.width=w*Math.min(innerWidth*.94/w,innerHeight*.94/h)+'px'});document.addEventListener('click',e=>{const z=e.target.closest('.zoom');if(!z||e.button||e.metaKey||e.ctrlKey||e.shiftKey||e.altKey)return;e.preventDefault();const img=z.tagName==='IMG'?z:z.querySelector('img');boxImg.src=z.tagName==='A'?z.href:img.currentSrc||img.src;boxImg.alt=img.alt;box.hidden=false});box.addEventListener('click',()=>{box.hidden=true;boxImg.removeAttribute('src')});document.addEventListener('keydown',e=>{if(e.key==='Escape')box.click()});</script></html>"""
 
 
 def main():
@@ -720,12 +876,15 @@ def main():
         if engine not in metadata["suite"]["engines"]:
             metadata["suite"]["engines"].append(engine)
     rows = summarize(records, metadata["suite"])
-    baseline = metadata["suite"].get("baseline") or "mujoco"
-    leaders = leaderboard(rows, metadata["suite"]["engines"], baseline)
+    performance = case_table(records, metadata["suite"]["engines"], timing_value, throughput=True)
+    memory = memory_tables(records, metadata["suite"]["engines"])
+    startup = case_table(records, metadata["suite"]["engines"], startup_value)
     (out / "summary.json").write_text(
-        json.dumps(dict(cases=rows, leaderboard=leaders), indent=2)
+        json.dumps(dict(cases=rows, performance_table=performance, memory_tables=memory, startup_table=startup), indent=2)
     )
-    (out / "curves").mkdir(exist_ok=True)
+    # Curves are regenerated below; drop those of an older layout or of removed cases.
+    shutil.rmtree(out / "curves", ignore_errors=True)
+    (out / "curves").mkdir()
     gallery = {}
     failures = []
     engine_order = {
@@ -764,11 +923,11 @@ def main():
                 f'<video controls loop muted preload="none" poster="{base}/simulation.png" src="{base}/simulation.mp4"></video>'
                 if version.get("mp4") == RENDER_VERSION
                 and (out / base / "simulation.mp4").exists()
-                else f'<img loading="lazy" src="{base}/simulation.png" alt="{html.escape(title)}">'
+                else f'<img class="zoom" loading="lazy" src="{base}/simulation.png" alt="{html.escape(title)}">'
             )
             scene_key = (r["scenario"], r["size"], r["worlds"], r["seed"])
             gallery.setdefault(scene_key, []).append(
-                f'<div class="card">{media}<small>{html.escape(title)}</small><br><a href="{base}/capture.json">Trajectory</a> · <a href="{base}/simulation.png">PNG</a></div>'
+                f'<div class="card">{media}<small>{html.escape(title)}</small><br><a class="evidence" href="{base}/capture.json">Trajectory</a> · <a href="{base}/simulation.png">PNG</a></div>'
             )
         except Exception as e:
             failures.append(dict(id=r["id"], error=str(e)))
@@ -796,66 +955,12 @@ def main():
         for f in curves(rows, out, records, metric)
     ]
     startup_files = curves(rows, out, records, startup=True)
-    memory_coverage = {}
-    for record in records:
-        memory = record.get(
-            "memory",
-            {"status": "not_collected", "reason": "Run predates memory collection"},
-        )
-        for name in ["ram", "gpu", "footprint"]:
-            metric = memory.get("metrics", {}).get(name, memory)
-            if (
-                name == "footprint"
-                and memory.get("status") == "complete"
-                and name not in memory.get("metrics", {})
-            ):
-                continue
-            key = (
-                record["engine"],
-                record["backend"],
-                name,
-                metric["status"],
-                metric.get("method", ""),
-                metric.get("scope", ""),
-                metric.get("peak_kind", ""),
-                metric.get("reason", ""),
-            )
-            memory_coverage[key] = memory_coverage.get(key, 0) + 1
-    memory_status = "<table><thead><tr><th>Engine / backend</th><th>Metric</th><th>Trials</th><th>Status</th><th>Counter / scope / reason</th></tr></thead><tbody>"
-    for (engine, backend, name, status, method, scope, kind, reason), count in sorted(
-        memory_coverage.items()
-    ):
-        detail = reason or f"{method} / {scope} / {kind}"
-        memory_status += f'<tr><td>{html.escape(engine)} / {html.escape(backend)}</td><td>{name}</td><td>{count}</td><td>{html.escape(status)}</td><td style="white-space:normal">{html.escape(detail)}</td></tr>'
-    memory_status += "</tbody></table>"
     import datetime
 
     data = json.dumps(
-        dict(records=records, metadata=metadata, rows=rows, leaders=leaders),
+        dict(records=records, metadata=metadata, rows=rows),
         allow_nan=False,
     ).replace("<", "\\u003c")
-    coverage = {}
-    for record in records:
-        timing = record.get(
-            "gpu_timing",
-            {"status": "not_collected", "reason": "Run predates GPU timing collection"},
-        )
-        key = (
-            record["engine"],
-            record["backend"],
-            timing["status"],
-            timing.get("method") or "—",
-            timing.get("scope") or "—",
-            timing.get("reason") or "",
-        )
-        coverage[key] = coverage.get(key, 0) + 1
-    gpu_status = "<table><thead><tr><th>Engine / backend</th><th>Trials</th><th>Status</th><th>Method / scope / reason</th></tr></thead><tbody>"
-    for (engine, backend, status, method, scope, reason), count in sorted(
-        coverage.items()
-    ):
-        detail = reason or f"{method} / {scope}"
-        gpu_status += f'<tr><td>{html.escape(engine)} / {html.escape(backend)}</td><td>{count}</td><td>{html.escape(status)}</td><td style="white-space:normal">{html.escape(detail)}</td></tr>'
-    gpu_status += "</tbody></table>"
     notes_path = out / "run-notes.json"
     notes = json.loads(notes_path.read_text()) if notes_path.exists() else []
     remeasured = [r for r in records if r.get("memory_remeasured")]
@@ -864,7 +969,7 @@ def main():
         notes.append(f"Memory of {len(ids)} trial(s) was remeasured after their timing run, in a separate replay: {reason} "
                      f"Their timings are unchanged; the earlier measurement is kept in results.json ({', '.join(ids)}).")
     if any(s.startswith("mpm_") for s in metadata["suite"]["scenarios"]):
-        notes = ["Single-environment MPM. Size is material-point count. Every engine receives the same particle positions, masses, grid spacing, gravity, substeps and simulated horizon. Constitutive laws, grids and collision discretizations differ; this is not an accuracy-equated comparison. The baseline is " + baseline + ".",
+        notes = ["Single-environment MPM. Size is material-point count. Every engine receives the same particle positions, masses, grid spacing, gravity, substeps and simulated horizon. Constitutive laws, grids and collision discretizations differ; this is not an accuracy-equated comparison.",
                  "MPM throughput plots show particle-steps per second. Snapshots display material points as spheres; their rigid orientation fields are protocol padding. Newton MPM uses SolverImplicitMPM, independently of its rigid-body MuJoCo Warp backend.", *notes]
     robot_license = ""
     for scenario, (title, license_file, note) in ROBOT_NOTES.items():
@@ -882,34 +987,37 @@ def main():
         if notes
         else ""
     )
+    # Inside a round, the report sits one level below its platform directory (see site_nav).
+    in_round = (out.parent / "round-plan.json").exists()
+    platform_label = ""
+    if in_round:
+        platform_file = out.parent / "platform.json"
+        platform_label = (json.loads(platform_file.read_text()) if platform_file.exists()
+                          else dict(zip(("id", "label"), default_platform(json.loads((out.parent / "round-plan.json").read_text())))))["label"]
     page = (
         HTML
-        .replace("__BASELINE__", html.escape("native MuJoCo" if baseline == "mujoco" else baseline))
+        .replace("__THEME_HEAD__", THEME_HEAD)
+        .replace("__NAV__", bar(1 if in_round else None, platform_label, axes=True, home=in_round))
+        .replace("__PERF_TABLE__", case_table_html(performance))
+        .replace("__MEMORY_TABLES__", memory_tables_html(memory))
+        .replace("__STARTUP_TABLE__", case_table_html(startup))
+        .replace("__THROUGHPUT_NOTE__", "; environment-steps per second in parentheses" if performance["batching"] else "")
+        .replace("__TRIAL_COUNT__", f"{len(records):,} trial{'s' if len(records) != 1 else ''}")
         .replace("__COUNT_UNIT__", table_count_unit)
         .replace("__ROBOT_LICENSE__", robot_license)
         .replace("__TITLE__", html.escape(metadata["suite"]["name"]))
-        .replace("__GPU_STATUS__", gpu_status)
-        .replace("__MEMORY_STATUS__", memory_status)
         .replace(
             "__MEMORY_CURVES__",
-            "".join(
-                f'<a href="{f}"><img src="{f}" alt="Memory curve, lower is better"></a>'
-                for f in memory_files
-            )
-            or '<p class="muted">No complete memory measurements in this run.</p>',
+            chart_images(memory_files, "Memory curve, lower is better", "No complete memory measurements in this run."),
         )
         .replace(
             "__STARTUP_CURVES__",
-            "".join(
-                f'<a href="{f}"><img src="{f}" alt="Setup and warmup curve, lower is better"></a>'
-                for f in startup_files
-            )
-            or '<p class="muted">No case has complete passing coverage yet.</p>',
+            chart_images(startup_files, "Setup and warmup curve, lower is better", "No case has complete passing coverage yet."),
         )
         .replace("__RUN_NOTES__", notes_html)
         .replace(
             "__HARDWARE__",
-            html.escape(metadata["hardware"]["cpu"] or metadata["hardware"]["uname"]),
+            html.escape(metadata["hardware"]["cpu"] or platform_label or metadata["hardware"]["uname"]),
         )
         .replace(
             "__DATE__",
@@ -919,10 +1027,7 @@ def main():
         )
         .replace(
             "__CURVES__",
-            "".join(
-                f'<a href="{f}"><img src="{f}" alt="Performance curve"></a>'
-                for f in files
-            ) or '<p class="muted">No cases have complete valid timing coverage.</p>',
+            chart_images(files, "Performance curve", "No cases have complete valid timing coverage."),
         )
         .replace(
             "__GALLERY__",

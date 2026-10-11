@@ -9,7 +9,7 @@ sys.path.insert(0, str(ROOT / "adapters/mujoco"))
 sys.path.insert(0, str(ROOT / "tools"))
 from physmark_adapter import mjcf
 from mujoco_adapter import Mujoco
-from report import summarize, leaderboard
+from report import summarize, case_table, timing_value
 
 
 def scene(name="mixed_pile", size=6):
@@ -89,20 +89,25 @@ def test_failed_trials_cannot_improve_rank():
                         ms_per_step=2 if engine == "mujoco" else 1,
                     )
                 )
-    ranks = leaderboard(summarize(records), ["mujoco", "rapier"])
-    assert ranks[0]["engine"] == "rapier"
-    assert ranks[0]["score"] == 2
-    records[-1]["status"] = "error"
-    ranks = leaderboard(summarize(records), ["mujoco", "rapier"])
-    assert next(r for r in ranks if r["engine"] == "rapier")["score"] is None
-    incomplete = [
-        r for r in records if not (r["engine"] == "rapier" and r["size"] == 8)
-    ]
-    ranks = leaderboard(summarize(incomplete), ["mujoco", "rapier"])
-    assert next(r for r in ranks if r["engine"] == "rapier")["score"] is None
+    table = case_table(records, ["mujoco", "rapier"], timing_value)
+    assert table["engines"] == ["rapier", "mujoco"]
+    assert table["rows"][0]["cells"]["rapier"]["median"] == 1
+    assert table["rows"][0]["cells"]["rapier"]["best"] and not table["rows"][0]["cells"]["mujoco"]["best"]
+    for r in records:
+        if r["engine"] == "rapier":
+            r.update(status="skipped", outcome_label="skipped (likely timeout)")
+    table = case_table(records, ["mujoco", "rapier"], timing_value)
+    assert table["engines"] == ["rapier", "mujoco"]
+    cell = table["rows"][1]["cells"]["rapier"]
+    assert cell["median"] is None and not cell["best"] and cell["failure"] == "timeout?"
+    assert table["rows"][1]["cells"]["mujoco"]["best"]
+    records[-1].update(status="passed")
+    records[-2].update(status="error", error="adapter out of memory")
+    cell = case_table(records, ["mujoco", "rapier"], timing_value)["rows"][1]["cells"]["rapier"]
+    assert (cell["passed"], cell["total"], cell["failure"], cell["best"]) == (1, 2, "OOM", True)
 
 
-def test_missing_and_duplicate_trials_withhold_scores():
+def test_missing_and_duplicate_trials_are_ineligible():
     suite = dict(
         engines=["mujoco", "rapier"],
         scenarios=["box_pile"],
@@ -127,7 +132,6 @@ def test_missing_and_duplicate_trials_withhold_scores():
     rows = summarize(records, suite)
     assert len(rows) == 4
     assert not any(r["eligible"] for r in rows)
-    assert all(r["score"] is None for r in leaderboard(rows, suite["engines"]))
 
 
 def test_gpu_statistics_require_complete_consistent_coverage():

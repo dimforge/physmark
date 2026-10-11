@@ -20,6 +20,7 @@ import sys
 import time
 
 from capabilities import candidates, detect, nexus_feature
+from site_nav import THEME_HEAD, bar, default_platform
 
 ROOT = Path(__file__).resolve().parents[1]
 EXE = ".exe" if platform.system() == "Windows" else ""
@@ -37,6 +38,17 @@ PARTS = [
      "One Go1 quadruped (12 actuators) or Booster T1 humanoid (23 actuators) standing on the ground per environment; 1 through 4,096 independent environments."),
 ]
 NAMES = dict(rapier="Rapier", mujoco="MuJoCo", nexus="Nexus", genesis="Genesis", newton="Newton", mjx="MJX", isaac="Isaac Sim")
+REPOSITORY = "https://github.com/dimforge/physmark"
+# Project websites, or repositories for engines without one.
+HOMEPAGES = dict(
+    rapier="https://rapier.rs",
+    mujoco="https://mujoco.org",
+    nexus="https://nexus.dimforge.com",
+    genesis="https://genesis-embodied-ai.github.io",
+    newton="https://github.com/newton-physics/newton",
+    mjx="https://mujoco.readthedocs.io/en/stable/mjx.html",
+    isaac="https://developer.nvidia.com/isaac/sim",
+)
 
 
 def controller():
@@ -147,13 +159,25 @@ def index(output, plan, statuses):
         notes += json.loads(notes_path.read_text())
     if notes:
         cards.insert(0, '<article style="grid-column:1/-1"><h2>Round status</h2>' + "".join(f"<p>{html.escape(n)}</p>" for n in notes) + "</article>")
-    if not (output / "assets").exists():
-        shutil.copytree(ROOT / "assets", output / "assets")
-    backends = " · ".join(f"{NAMES[e]} {b.upper() if b in ('cpu', 'cuda') else b.capitalize()}" for e, b in plan["backends"].items())
+    for source in (ROOT / "assets").rglob("*"):
+        target = output / "assets" / source.relative_to(ROOT / "assets")
+        if source.is_file() and (not target.exists() or target.stat().st_size != source.stat().st_size):
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, target)
+    # This round is one platform of a published site (see site_nav); `physmark site` may relabel it.
+    platform_path = output / "platform.json"
+    if not platform_path.exists():
+        platform_id, label = default_platform(plan)
+        platform_path.write_text(json.dumps(dict(id=platform_id, label=label), indent=2))
+    platform_label = json.loads(platform_path.read_text())["label"]
+    backends = " · ".join(
+        f'<a href="{HOMEPAGES[e]}">{NAMES[e]}</a> {html.escape(b.upper() if b in ("cpu", "cuda") else b.capitalize())}'
+        for e, b in plan["backends"].items())
     limit = f" Adapter memory cap: {plan['memory_limit_gib']} GiB." if plan.get("memory_limit_gib") else ""
     (output / "index.html").write_text('''<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>PhysMark · Full round</title><link rel="icon" href="assets/branding/physmark-icon.svg">
-<style>:root{color-scheme:dark}body{background:#0b121b;color:#e8f0f6;font:16px/1.6 system-ui;margin:0}main{max-width:1120px;margin:60px auto;padding:0 28px}h1{font-size:42px;letter-spacing:-1.4px;line-height:1.15}h1 span{color:#66e3b5}h2{font-size:22px;margin:5px 0}p{color:#a8bac9}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:20px;margin:32px 0}article{background:#111d29;border:1px solid #25384a;border-radius:14px;padding:24px}a{color:#66e3b5;text-decoration:none;font-weight:600}.eyebrow{text-transform:uppercase;font-size:11px;letter-spacing:1.5px;color:#66e3b5}.counts{font-size:14px;color:#d4dee7}small{color:#9cb0c0}</style><main>
-<div class="eyebrow">''' + html.escape(hardware_line(plan)) + ''' · Full benchmark round</div><h1><img src="assets/branding/physmark-logo.svg" alt="physmark." style="width:290px;max-width:100%"></h1><p>''' + html.escape(backends) + f" · {plan['threads']} CPU workers" + '''</p><div class="grid">''' + "".join(cards) + '''</div><small>Each report includes synchronized timings, device timestamps where exposed, RAM/GPU memory, validation outcomes, scene previews and untimed replay videos. Rankings require complete valid coverage and use each suite’s declared baseline. Missing data and resource-limit skips remain visible. CPU subprocess budget: 120 seconds.''' + html.escape(limit) + '''</small></main></html>''')
+''' + THEME_HEAD + '''<style>*{box-sizing:border-box}body{background:var(--bg);color:var(--text);font:16px/1.6 system-ui,sans-serif;margin:0}main{max-width:1120px;margin:auto;padding:38px}header{display:flex;justify-content:space-between;align-items:center;gap:16px;border-bottom:1px solid var(--line);padding-bottom:28px}.brand{flex-shrink:0;max-width:100%;line-height:0}.brand img{display:block;width:288px;max-width:100%;height:auto}.tag{display:inline-block;border:1px solid var(--line);padding:3px 9px;border-radius:16px;font-size:12px}.muted{color:var(--muted)}h2{font-size:22px;margin:5px 0}p{color:var(--muted)}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:20px;margin:32px 0}article{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:24px}a{color:var(--accent);text-decoration:none;font-weight:600}.eyebrow{text-transform:uppercase;font-size:11px;letter-spacing:1.5px;color:var(--accent);margin-top:26px}.counts{font-size:14px;color:var(--text)}.notice{background:var(--panel);border:1px solid var(--line);border-left:4px solid var(--accent);border-radius:10px;padding:16px 22px;margin:24px 0 0}.notice h2{font-size:17px;margin:0 0 6px}.notice p{margin:6px 0}small{color:var(--muted)}@media(max-width:650px){main{padding:20px}header{display:block}}</style><main>
+<header><div class="brand"><img class="logo-dark" src="assets/branding/physmark-logo.svg" width="288" height="65" alt="PhysMark."><img class="logo-light" src="assets/branding/physmark-logo-light.svg" width="288" height="65" alt="PhysMark."></div><div class="muted">Physics, measured. <span class="tag">FULL BENCHMARK ROUND</span></div></header>''' + bar(0, platform_label) + '''
+<div class="eyebrow">''' + html.escape(hardware_line(plan)) + '''</div><p>''' + backends + f" · {plan['threads']} CPU workers" + '''</p><section class="notice"><h2>Read before drawing conclusions</h2><p><strong>These benchmarks are AI-generated</strong>, including the scenes and the integration code of every engine.</p><p>Readers and physics engine authors are encouraged to double-check how each engine is integrated, in the <a href="''' + REPOSITORY + '''/tree/main/adapters">adapters directory</a>; corrections are welcome.</p><p>Take the results with a grain of salt: they only cover the specific scenarios below, each run with a specific solver configuration (timestep, substeps, iterations and the other settings listed in each report). Other scenes or settings can rank the engines differently.</p></section><div class="grid">''' + "".join(cards) + '''</div><small>Each report includes synchronized timings, device timestamps where exposed, RAM/GPU memory, validation outcomes, scene previews and untimed replay videos. Performance tables use synchronized time and highlight the fastest CPU and GPU engine per case. Missing data and resource-limit skips remain visible. CPU subprocess budget: 120 seconds.''' + html.escape(limit) + '''</small></main></html>''')
     (output / "round-status.json").write_text(json.dumps(statuses, indent=2))
 
 
