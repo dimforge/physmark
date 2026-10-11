@@ -83,7 +83,7 @@ Counter references: [Apple Metal allocation counter](https://developer.apple.com
 | Nexus | Native Rust GPU pipeline (Metal, CUDA, WebGPU or CPU feature); native batching |
 | Genesis | Genesis rigid and MPM solvers through Python; native batching. Genesis allocates an SDF grid per geom (default up to 128³ cells, about 40 MiB each) but only fills and queries them for non-convex geoms; primitive scenes are all convex and use its minimum, 16³, so its memory figures exclude unused buffers (the default also exceeds its int32 cell limit from about 340 bodies). Each trial records `sdf_max_res` and `sdf_active`. Robot scenes keep the default |
 | Newton | `SolverMuJoCo(use_mujoco_cpu=False)`, i.e. MuJoCo Warp, for rigid bodies; `SolverImplicitMPM` for MPM |
-| MuJoCo | Native library and Python extension built from the pinned source commit; worlds run serially. Models keep MuJoCo's automatic arena size; only when it cannot be allocated (Linux refuses single allocations beyond RAM + swap, from about 8,000 bodies) is it capped at min(16 GiB, RAM / 2), for MuJoCo, MJX and Newton's MuJoCo Warp model alike. Arena size never changes results unless exhausted |
+| MuJoCo | Native library and Python extension built from the pinned source commit; worlds run serially, except robot environments, which run as one thread-pool task each. Models keep MuJoCo's automatic arena size; only when it cannot be allocated (Linux refuses single allocations beyond RAM + swap, from about 8,000 bodies) is it capped at min(16 GiB, RAM / 2), for MuJoCo, MJX and Newton's MuJoCo Warp model alike. Arena size never changes results unless exhausted |
 | MJX | MuJoCo MJX JAX implementation, JIT-compiled and `vmap`ped across worlds |
 | Isaac Sim | PhysX 5 through Isaac Sim's wheels, USD stage built directly (see below) in a physics-only Kit experience (the default one starts the RTX renderer, whose CUDA memory tracking blocks CUPTI profiling). Bodies are authored in groups of at most 1,000 (64 environments per block): USD child lists make a flat layout quadratic, about 33 s of setup at 28,000 bodies. GPU contact buffers hold 40 contacts and 20 patches per body. PhysX logs GPU failures and keeps running, so the controller fails any trial whose log reports a buffer overflow, a failed device allocation or a kernel that failed to launch (the latter two as out of memory): a failed allocation leaves the solver idle, and nothing moving would otherwise pass validation |
 
@@ -176,7 +176,9 @@ with four internal PGS iterations per 240 Hz step. Nexus uses explicit Coriolis 
 and `friction_in_bias_pass = false`, with `substep_refresh` and `substep_refresh_light`
 false. Rapier keeps its semi-implicit Coriolis term (with its explicit fallback on
 divergence), which it cannot switch off; its robot environments run as one rayon task
-each, on single-threaded worlds (a build without Rapier's `parallel` feature). Its buffers follow the fixed Nexus capacity
+each, on single-threaded worlds (a build without Rapier's `parallel` feature). MuJoCo robot
+environments likewise run as one thread-pool task each (`mj_step` releases the GIL);
+MJX batches on its device instead. Its buffers follow the fixed Nexus capacity
 policy described above; each contact point consumes one normal and two friction
 multibody contact slots.
 These settings apply to every robot workload.

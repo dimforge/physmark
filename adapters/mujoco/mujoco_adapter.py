@@ -25,13 +25,20 @@ class Mujoco:
             if b["dynamic"]
         ]
         self.data = [mujoco.MjData(self.model) for _ in range(job["worlds"])]
+        # Robot environments step as one thread-pool task each (mj_step releases the GIL), like
+        # Rapier's one rayon task per environment. MJX batches on its device instead.
+        self.pool = None
+        if job["scene"].get("robot") and type(self) is Mujoco:
+            from concurrent.futures import ThreadPoolExecutor
+
+            self.pool = ThreadPoolExecutor(max_workers=job["threads"])
         self.settings = {
             "solver": "Newton",
             "iterations": 50,
             "integrator": mujoco.mjtIntegrator(self.model.opt.integrator).name.removeprefix("mjINT_"),
             "precision": "f64",
             "sleeping": False,
-            "world_execution": "serial",
+            "world_execution": "one thread-pool task per environment" if self.pool else "serial",
             "mujoco_version": mujoco.__version__,
             "contact_solref": [0.02, 1],
             "friction_cone": "pyramidal",
@@ -58,6 +65,9 @@ class Mujoco:
             self.mj.mj_forward(self.model, d)
 
     def advance(self, steps):
+        if self.pool:
+            list(self.pool.map(lambda d: self.mj.mj_step(self.model, d, nstep=steps), self.data))
+            return
         for d in self.data:
             self.mj.mj_step(self.model, d, nstep=steps)
 
