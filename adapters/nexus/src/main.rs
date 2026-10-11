@@ -101,13 +101,32 @@ async fn backend(name: &str) -> Result<GpuBackend> {
         #[cfg(feature = "metal")]
         "metal" => GpuBackend::Metal(khal::backend::metal::Metal::new()?),
         #[cfg(feature = "webgpu")]
-        "webgpu" => GpuBackend::WebGpu(khal::backend::WebGpu::default().await?),
+        "webgpu" => GpuBackend::WebGpu(webgpu().await?),
         #[cfg(feature = "cuda")]
         "cuda" => GpuBackend::Cuda(khal::backend::Cuda::new(0)?),
         #[cfg(feature = "cpu")]
         "cpu" => GpuBackend::Cpu,
         _ => bail!("this Nexus build does not include requested backend {name}"),
     })
+}
+/// WebGPU with the adapter's own buffer size limits: wgpu's 256 MiB defaults are too small
+/// for large batches (4,096 robot environments need a 264 MiB buffer).
+#[cfg(feature = "webgpu")]
+async fn webgpu() -> Result<khal::backend::WebGpu> {
+    use khal::re_exports::wgpu;
+    let adapter = wgpu::Instance::default()
+        .request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            ..Default::default()
+        })
+        .await?;
+    let supported = adapter.limits();
+    let limits = wgpu::Limits {
+        max_buffer_size: supported.max_buffer_size,
+        max_storage_buffer_binding_size: supported.max_storage_buffer_binding_size,
+        ..Default::default()
+    };
+    khal::backend::WebGpu::new(wgpu::Features::default(), limits).await
 }
 /// `physmark-nexus --calibrate JOB.json OUT.json`: measures the buffer demand of a scene for
 /// `capacities.json` (see `tools/calibrate_nexus.py`). Never used by benchmark trials.
