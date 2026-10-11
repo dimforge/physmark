@@ -133,6 +133,9 @@ enum Action {
         /// Leave out larger per-trial evidence files; negative publishes everything.
         #[arg(long, default_value_t = 1.0, allow_hyphen_values = true)]
         max_evidence_mb: f64,
+        /// Publish only what visitors see: pages, charts, gallery images and videos.
+        #[arg(long)]
+        report_only: bool,
     },
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1450,6 +1453,7 @@ fn main() -> Result<()> {
             id,
             label,
             max_evidence_mb,
+            report_only,
         } => {
             let cwd = std::env::current_dir()?;
             let mut c = Command::new(system_python());
@@ -1464,6 +1468,9 @@ fn main() -> Result<()> {
             }
             if let Some(label) = label {
                 c.arg("--label").arg(label);
+            }
+            if report_only {
+                c.arg("--report-only");
             }
             ensure!(c.status()?.success(), "site publishing failed");
             Ok(())

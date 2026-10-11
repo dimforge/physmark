@@ -139,12 +139,14 @@ def hardware_line(plan):
     return f"{caps['cpu']} · {gpu} · {caps['system']} {caps['machine']}"
 
 
-def index(output, plan, statuses):
+def index(output, plan, statuses, source=None):
+    """Write the landing page. source: the round whose results to count when output is a
+    published copy without them (then no round-status.json is written either)."""
     cards = []
     for key, title, _, _, description in PARTS:
         part_status = statuses.get(key, {})
         directory = part_status.get("report_directory", key)
-        path = output / directory / "results.json"
+        path = (source or output) / directory / "results.json"
         records = json.loads(path.read_text()) if path.exists() else []
         counts = Counter(r["status"] for r in records)
         count_text = ", ".join(f"{v} {k}" for k, v in sorted(counts.items())) or "Pending"
@@ -154,14 +156,14 @@ def index(output, plan, statuses):
         link = f'<a href="{html.escape(directory, quote=True)}/index.html">Open report →</a>' if (output / directory / "index.html").exists() else ""
         cards.append(f'<article><div class="eyebrow">{html.escape(state)}</div><h2>{title}</h2><p>{description}</p>{engine_text}<p class="counts">{count_text}</p>{link}</article>')
     notes = [f"{NAMES[e]} skipped: {reason}" for e, reason in sorted(plan["skipped"].items())]
-    notes_path = output / "round-notes.json"
+    notes_path = (source or output) / "round-notes.json"
     if notes_path.exists():
         notes += json.loads(notes_path.read_text())
     if notes:
         cards.insert(0, '<article style="grid-column:1/-1"><h2>Round status</h2>' + "".join(f"<p>{html.escape(n)}</p>" for n in notes) + "</article>")
-    for source in (ROOT / "assets").rglob("*"):
-        target = output / "assets" / source.relative_to(ROOT / "assets")
-        if source.is_file() and (not target.exists() or target.stat().st_size != source.stat().st_size):
+    for name in ["physmark-icon.svg", "physmark-logo.svg", "physmark-logo-light.svg"]:
+        source, target = ROOT / "assets/branding" / name, output / "assets/branding" / name
+        if not target.exists() or target.stat().st_size != source.stat().st_size:
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, target)
     # This round is one platform of a published site (see site_nav); `physmark site` may relabel it.
@@ -178,7 +180,8 @@ def index(output, plan, statuses):
 ''' + THEME_HEAD + '''<style>*{box-sizing:border-box}body{background:var(--bg);color:var(--text);font:16px/1.6 system-ui,sans-serif;margin:0}main{max-width:1120px;margin:auto;padding:38px}header{display:flex;justify-content:space-between;align-items:center;gap:16px;border-bottom:1px solid var(--line);padding-bottom:28px}.brand{flex-shrink:0;max-width:100%;line-height:0}.brand img{display:block;width:288px;max-width:100%;height:auto}.tag{display:inline-block;border:1px solid var(--line);padding:3px 9px;border-radius:16px;font-size:12px}.muted{color:var(--muted)}h2{font-size:22px;margin:5px 0}p{color:var(--muted)}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:20px;margin:32px 0}article{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:24px}a{color:var(--accent);text-decoration:none;font-weight:600}.eyebrow{text-transform:uppercase;font-size:11px;letter-spacing:1.5px;color:var(--accent);margin-top:26px}.counts{font-size:14px;color:var(--text)}.notice{background:var(--panel);border:1px solid var(--line);border-left:4px solid var(--accent);border-radius:10px;padding:16px 22px;margin:24px 0 0}.notice h2{font-size:17px;margin:0 0 6px}.notice p{margin:6px 0}small{color:var(--muted)}@media(max-width:650px){main{padding:20px}header{display:block}}</style><main>
 <header><div class="brand"><img class="logo-dark" src="assets/branding/physmark-logo.svg" width="288" height="65" alt="PhysMark."><img class="logo-light" src="assets/branding/physmark-logo-light.svg" width="288" height="65" alt="PhysMark."></div><div class="muted">Physics, measured. <span class="tag">FULL BENCHMARK ROUND</span></div></header>''' + bar(0, platform_label) + '''
 <div class="eyebrow">''' + html.escape(hardware_line(plan)) + '''</div><p>''' + backends + f" · {plan['threads']} CPU workers" + '''</p><section class="notice"><h2>Read before drawing conclusions</h2><p><strong>These benchmarks are AI-generated</strong>, including the scenes and the integration code of every engine.</p><p>Readers and physics engine authors are encouraged to double-check how each engine is integrated, in the <a href="''' + REPOSITORY + '''/tree/main/adapters">adapters directory</a>; corrections are welcome.</p><p>Take the results with a grain of salt: they only cover the specific scenarios below, each run with a specific solver configuration (timestep, substeps, iterations and the other settings listed in each report). Other scenes or settings can rank the engines differently.</p></section><div class="grid">''' + "".join(cards) + '''</div><small>Each report includes synchronized timings, device timestamps where exposed, RAM/GPU memory, validation outcomes, scene previews and untimed replay videos. Performance tables use synchronized time and highlight the fastest CPU and GPU engine per case. Missing data and resource-limit skips remain visible. CPU subprocess budget: 120 seconds.''' + html.escape(limit) + '''</small></main></html>''')
-    (output / "round-status.json").write_text(json.dumps(statuses, indent=2))
+    if source is None:
+        (output / "round-status.json").write_text(json.dumps(statuses, indent=2))
 
 
 def main():

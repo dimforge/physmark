@@ -95,6 +95,14 @@ To add a round from another machine to a deployed site, copy the deployed
 directories stay untouched. Serve the site over HTTP: opened from disk, a report
 shows only its own platform.
 
+To publish to the PhysMark website, run `./publish-linux.sh` on the Linux + NVIDIA
+machine and `./publish-macos.sh` on the Mac, each after its round (pass the round
+directory if it is not `result/full` or `results/full`). Each script uploads only its
+own platform directory with rsync, merges `platforms.json` with the online copy and
+leaves the other platform untouched. Only what visitors see is uploaded: pages,
+charts, gallery images and videos (`site --report-only`). Reports made before the
+platform selector must be regenerated with `cargo run --release -- report` first.
+
 ## Other commands
 
 ```sh
